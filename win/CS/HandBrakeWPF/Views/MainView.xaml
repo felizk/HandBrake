@@ -320,6 +320,18 @@
                                />
                     </StackPanel>
                 </Button>
+                <Button Name="LoadJobsButton" AutomationProperties.Name="Load Jobs" cal:Message.Attach="[Event Click] = [Action LoadJobs]">
+                    <StackPanel Orientation="Horizontal">
+                        <Image Width="32"
+                               Height="32"
+                               Source="Images/ActivityWindow.png"
+                               />
+                        <Label Margin="8,0,0,0"
+                               VerticalAlignment="Center"
+                               Content="Load Jobs"
+                               />
+                    </StackPanel>
+                </Button>
             </ToolBar>
         </StackPanel>
 

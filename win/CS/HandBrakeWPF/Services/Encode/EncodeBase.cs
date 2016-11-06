@@ -294,7 +294,7 @@ namespace HandBrakeWPF.Services.Encode
         /// </param>
         protected void ProcessLogMessage(string message)
         {
-            if (!string.IsNullOrEmpty(message))
+            if (!string.IsNullOrEmpty(message) && !message.Contains("libdvdread: CHECK_VALUE") && !message.Contains("dsi->dsi_gi.zero1"))
             {
                 try
                 {

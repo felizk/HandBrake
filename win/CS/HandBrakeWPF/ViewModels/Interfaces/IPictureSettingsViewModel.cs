@@ -9,10 +9,13 @@
 
 namespace HandBrakeWPF.ViewModels.Interfaces
 {
+    using System.Security.RightsManagement;
+
     /// <summary>
     /// The Picture Settings View Model Interface
     /// </summary>
     public interface IPictureSettingsViewModel : ITabInterface
     {
+        int Width { get; set; }
     }
 }

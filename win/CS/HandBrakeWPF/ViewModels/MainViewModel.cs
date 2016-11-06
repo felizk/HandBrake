@@ -22,6 +22,8 @@ namespace HandBrakeWPF.ViewModels
     using Caliburn.Micro;
 
     using HandBrake.ApplicationServices.Interop;
+    using HandBrake.ApplicationServices.Interop.Json.State;
+    using HandBrake.ApplicationServices.Interop.Model.Encoding;
     using HandBrake.ApplicationServices.Utilities;
 
     using HandBrakeWPF.Commands;
@@ -30,12 +32,14 @@ namespace HandBrakeWPF.ViewModels
     using HandBrakeWPF.Helpers;
     using HandBrakeWPF.Model;
     using HandBrakeWPF.Model.Audio;
+    using HandBrakeWPF.Model.Jobs;
     using HandBrakeWPF.Model.Subtitles;
     using HandBrakeWPF.Properties;
     using HandBrakeWPF.Services.Encode.EventArgs;
     using HandBrakeWPF.Services.Encode.Interfaces;
     using HandBrakeWPF.Services.Encode.Model;
     using HandBrakeWPF.Services.Encode.Model.Models;
+    using HandBrakeWPF.Services.Encode.Model.Models.Video;
     using HandBrakeWPF.Services.Interfaces;
     using HandBrakeWPF.Services.Presets.Interfaces;
     using HandBrakeWPF.Services.Presets.Model;
@@ -49,6 +53,8 @@ namespace HandBrakeWPF.ViewModels
     using HandBrakeWPF.Views;
 
     using Microsoft.Win32;
+
+    using Newtonsoft.Json;
 
     using Ookii.Dialogs.Wpf;
 
@@ -1235,6 +1241,135 @@ namespace HandBrakeWPF.ViewModels
                 ILogViewModel logvm = IoC.Get<ILogViewModel>();
                 logvm.SelectedTab = this.IsEncoding ? 0 : 1;
                 this.windowManager.ShowWindow(logvm);
+            }
+        }
+
+        public void LoadJobs()
+        {
+            OpenFileDialog dialog = new OpenFileDialog { Filter = "JSON files (*.json)|*.json" };
+            bool? dialogResult = dialog.ShowDialog();
+
+            if (dialogResult.HasValue && dialogResult.Value)
+            {
+                this.SelectedPreset = null;
+                this.SelectedPreset = this.presetService.DefaultPreset;
+
+                var json = File.ReadAllText(dialog.FileName);
+
+                DiscJob state = JsonConvert.DeserializeObject<DiscJob>(json);
+                var preset = state.Preset ?? new DiscJobEncodePreset();
+
+                if (preset.Anime)
+                {
+                    var animationTune = VideoViewModel.VideoTunes.FirstOrDefault(x => x.ShortName == "animation");
+                    if (animationTune != null)
+                    {
+                        VideoViewModel.VideoTune = animationTune;
+                    }
+                }
+
+                foreach (var encode in state.Encodes)
+                {
+                    this.Destination = Path.Combine(
+                        Path.GetDirectoryName(dialog.FileName),
+                        Path.ChangeExtension(encode.FileName, ".mkv"));
+
+                    int? targetTitle = encode.Title ?? preset.Title;
+                    if (!targetTitle.HasValue)
+                    {
+                        MessageBox.Show("Bad title for: " + encode.FileName);
+                        continue;
+                    }
+
+                    var title = ScannedSource.Titles.FirstOrDefault(x => x.TitleNumber == targetTitle.Value);
+                    if (title != null)
+                    {
+                        this.SelectedTitle = title;
+                        var width = encode.Width ?? preset.Width;
+                        if (width.HasValue)
+                        {
+                            PictureSettingsViewModel.Width = width.Value;
+                        }
+
+                        if (encode.Interlaced || preset.Interlaced)
+                        {
+                            CurrentTask.ExtraAdvancedArguments = "tff";
+                        }
+
+                        if (encode.Telecined || preset.Telecined)
+                        {
+                            CurrentTask.Detelecine = Detelecine.Default;
+                            CurrentTask.Framerate = 23.976;
+                            CurrentTask.FramerateMode = FramerateMode.CFR;
+                        }
+
+                        if (encode.UseDecomb || preset.UseDecomb)
+                        {
+                            FiltersViewModel.SelectedDeinterlaceFilter = DeinterlaceFilter.Decomb;
+                            //FiltersViewModel.SelectedDecomb = Decomb.Bob;
+                        }
+
+                        var quality = encode.Quality ?? preset.Quality;
+                        if (quality.HasValue)
+                        {
+                            CurrentTask.Quality = quality.Value;
+                        }
+
+                        if (encode.ChapterEnd.HasValue)
+                        {
+                            CurrentTask.PointToPointMode = PointToPointMode.Chapters;
+                            CurrentTask.EndPoint = encode.ChapterEnd.Value;
+                        }
+
+                        if (encode.ChapterStart.HasValue)
+                        {
+                            CurrentTask.PointToPointMode = PointToPointMode.Chapters;
+                            CurrentTask.StartPoint = encode.ChapterStart.Value;
+                        }
+
+                        CurrentTask.AudioTracks.Clear();
+
+                        var audioTracks = encode.Audio != null && encode.Audio.Count > 0 ? encode.Audio : preset.Audio;
+                        foreach (var track in audioTracks)
+                        {
+                            var audio = SelectedTitle.AudioTracks.FirstOrDefault(x => x.TrackNumber == track);
+                            if (audio != null)
+                            {
+                                CurrentTask.AudioTracks.Add(
+                                    new AudioTrack() { ScannedTrack = audio, Encoder = AudioEncoder.Passthrough });
+                            }
+                        }
+
+                        CurrentTask.SubtitleTracks.Clear();
+
+                        var defaultSubtitleTrack = encode.DefaultSubtitle.HasValue
+                            ? encode.DefaultSubtitle
+                            : preset.DefaultSubtitle;
+
+                        var subtitleTracks = encode.Subtitles != null && encode.Subtitles.Count > 0 ? encode.Subtitles : preset.Subtitles;
+
+                        foreach (var track in subtitleTracks)
+                        {
+                            var audio = SelectedTitle.Subtitles.FirstOrDefault(x => x.TrackNumber == track);
+                            if (audio != null)
+                            {
+                                bool isDefault = defaultSubtitleTrack.HasValue
+                                                 && audio.TrackNumber == defaultSubtitleTrack.Value;
+
+                                CurrentTask.SubtitleTracks.Add(
+                                    new SubtitleTrack()
+                                    {
+                                        SourceTrack = audio,
+                                        Burned = false,
+                                        SubtitleType = audio.SubtitleType,
+                                        Default = isDefault
+                                    });
+                            }
+                        }
+
+                        AddToQueue();
+                    }
+                }
             }
         }
 

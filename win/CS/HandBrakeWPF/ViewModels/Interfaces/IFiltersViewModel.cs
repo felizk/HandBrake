@@ -9,10 +9,14 @@
 
 namespace HandBrakeWPF.ViewModels.Interfaces
 {
+    using HandBrake.ApplicationServices.Interop.Model.Encoding;
+
     /// <summary>
     /// The Filters View Model Interface
     /// </summary>
     public interface IFiltersViewModel : ITabInterface
     {
+        Decomb SelectedDecomb { get; set; }
+        DeinterlaceFilter SelectedDeinterlaceFilter { get; set; }
     }
 }

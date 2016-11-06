@@ -9,6 +9,10 @@
 
 namespace HandBrakeWPF.ViewModels.Interfaces
 {
+    using System.ComponentModel;
+
+    using HandBrakeWPF.Services.Encode.Model.Models.Video;
+
     /// <summary>
     /// The Video View Model Interface
     /// </summary>
@@ -23,5 +27,9 @@ namespace HandBrakeWPF.ViewModels.Interfaces
         /// Clear the advanced x264 options.
         /// </summary>
         void ClearAdvancedSettings();
+
+        VideoTune VideoTune { get; set; }
+
+        BindingList<VideoTune> VideoTunes { get; }
     }
 }

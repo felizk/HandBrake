@@ -225,7 +225,7 @@ namespace HandBrakeWPF.Services.Scan
             this.instance.ScanCompleted += this.InstanceScanCompleted;
 
             // Start the scan on a back
-            this.ScanSource(sourcePath, title, configuraiton.PreviewScanCount, configuraiton);
+            this.ScanSource(sourcePath, title, 1, configuraiton);
         }
 
         /// <summary>
