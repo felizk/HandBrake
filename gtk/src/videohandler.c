@@ -1,7 +1,7 @@
 /* -*- Mode: C; indent-tabs-mode: t; c-basic-offset: 4; tab-width: 4 -*- */
 /*
  * videohandler.c
- * Copyright (C) John Stebbins 2008-2016 <stebbins@stebbins>
+ * Copyright (C) John Stebbins 2008-2017 <stebbins@stebbins>
  *
  * videohandler.c is free software.
  *
@@ -40,6 +40,26 @@ int ghb_get_video_encoder(GhbValue *settings)
     return hb_video_encoder_get_from_name(encoder);
 }
 
+void ghb_set_video_preset(GhbValue *settings, int encoder, const char * preset)
+{
+    const char * const * videoPresets;
+    int                  ii;
+
+    videoPresets = hb_video_encoder_get_presets(encoder);
+    for (ii = 0; preset && videoPresets && videoPresets[ii]; ii++)
+    {
+        if (!strcasecmp(preset, videoPresets[ii]))
+        {
+            ghb_dict_set_int(settings, "VideoPresetSlider", ii);
+            break;
+        }
+    }
+    if (preset != NULL)
+    {
+        ghb_dict_set_string(settings, "VideoPreset", preset);
+    }
+}
+
 G_MODULE_EXPORT void
 vcodec_changed_cb(GtkWidget *widget, signal_user_data_t *ud)
 {
@@ -64,6 +84,7 @@ vcodec_changed_cb(GtkWidget *widget, signal_user_data_t *ud)
     ghb_ui_update(ud, "VideoTune", ghb_int_value(0));
     ghb_ui_update(ud, "VideoProfile", ghb_int_value(0));
     ghb_ui_update(ud, "VideoLevel", ghb_int_value(0));
+    ghb_ui_update(ud, "VideoOptionExtra", ghb_string_value(""));
 
     // Set the range of the preset slider
     int encoder = ghb_get_video_encoder(ud->settings);
@@ -79,6 +100,9 @@ vcodec_changed_cb(GtkWidget *widget, signal_user_data_t *ud)
     {
         gtk_range_set_range(GTK_RANGE(presetSlider), 0, count-1);
     }
+    ghb_set_video_preset(ud->settings, encoder, "medium");
+    GhbValue *gval = ghb_dict_get_value(ud->settings, "VideoPresetSlider");
+    ghb_ui_settings_update(ud, ud->settings, "VideoPresetSlider", gval);
 
     // Advanced options are only for x264
     if (!(encoder & HB_VCODEC_X264_MASK))
@@ -274,7 +298,7 @@ format_video_preset_cb(GtkScale *scale, gdouble val, signal_user_data_t *ud)
     if (video_presets != NULL)
     {
         preset = video_presets[(int)val];
-        return g_strdup_printf(" %-12s", preset);
+        return g_strdup_printf("%-10s", preset);
     }
     return g_strdup_printf(" %-12s", "ERROR");
 }

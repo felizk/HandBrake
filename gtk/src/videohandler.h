@@ -1,7 +1,7 @@
 /* -*- Mode: C; indent-tabs-mode: t; c-basic-offset: 4; tab-width: 4 -*- */
 /*
  * videohandler.h
- * Copyright (C) John Stebbins 2008-2016 <stebbins@stebbins>
+ * Copyright (C) John Stebbins 2008-2017 <stebbins@stebbins>
  *
  * videohandler.h is free software.
  *
@@ -30,5 +30,6 @@
 
 int ghb_get_video_encoder(GhbValue *settings);
 void ghb_video_setting_changed(GtkWidget *widget, signal_user_data_t *ud);
+void ghb_set_video_preset(GhbValue *settings, int encoder, const char * preset);
 
 #endif // _VIDEOHANDLER_H_

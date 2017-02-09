@@ -1,6 +1,6 @@
 /*
  * ghbcompat.h
- * Copyright (C) John Stebbins 2008-2016 <stebbins@stebbins>
+ * Copyright (C) John Stebbins 2008-2017 <stebbins@stebbins>
  *
  * ghbcompat.h is free software.
  *
@@ -45,6 +45,42 @@ static inline PangoFontDescription* ghb_widget_get_font(GtkWidget *widget)
 #endif
 
     return font;
+}
+
+static inline void ghb_monitor_get_size(GdkWindow *window, gint *w, gint *h)
+{
+    *w = *h = 0;
+
+#if GTK_CHECK_VERSION(3, 22, 0)
+    if (window != NULL)
+    {
+        GdkMonitor *mm;
+        GdkDisplay *dd;
+
+        dd = gdk_display_get_default();
+        if (dd != NULL)
+        {
+            mm = gdk_display_get_monitor_at_window(dd, window);
+            if (mm != NULL)
+            {
+                GdkRectangle rr;
+
+                gdk_monitor_get_geometry(mm, &rr);
+                *w = rr.width;
+                *h = rr.height;
+            }
+        }
+    }
+#else
+    GdkScreen *ss;
+
+    ss = gdk_screen_get_default();
+    if (ss != NULL)
+    {
+        *w = gdk_screen_get_width(ss);
+        *h = gdk_screen_get_height(ss);
+    }
+#endif
 }
 
 #if !GTK_CHECK_VERSION(3, 10, 0)

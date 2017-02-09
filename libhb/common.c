@@ -1,6 +1,6 @@
 /* common.c
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -31,6 +31,8 @@
 #include <windows.h>
 #endif
 
+static int mixdown_get_opus_coupled_stream_count(int mixdown);
+
 /**********************************************************************
  * Global variables
  *********************************************************************/
@@ -46,6 +48,7 @@ enum
     HB_GID_VCODEC_MPEG4,
     HB_GID_VCODEC_THEORA,
     HB_GID_VCODEC_VP8,
+    HB_GID_VCODEC_VP9,
     HB_GID_ACODEC_AAC,
     HB_GID_ACODEC_AAC_HE,
     HB_GID_ACODEC_AAC_PASS,
@@ -62,6 +65,7 @@ enum
     HB_GID_ACODEC_MP3_PASS,
     HB_GID_ACODEC_TRUEHD_PASS,
     HB_GID_ACODEC_VORBIS,
+    HB_GID_ACODEC_OPUS,
     HB_GID_MUX_MKV,
     HB_GID_MUX_MP4,
 };
@@ -102,6 +106,11 @@ hb_rate_internal_t hb_video_rates[]  =
     { { "50",                   540000, }, NULL, 1, },
     { { "59.94",                450450, }, NULL, 1, },
     { { "60",                   450000, }, NULL, 1, },
+    { { "72",                   375000, }, NULL, 1, },
+    { { "75",                   360000, }, NULL, 1, },
+    { { "90",                   300000, }, NULL, 1, },
+    { { "100",                  270000, }, NULL, 1, },
+    { { "120",                  225000, }, NULL, 1, },
 };
 int hb_video_rates_count = sizeof(hb_video_rates) / sizeof(hb_video_rates[0]);
 
@@ -235,6 +244,7 @@ hb_encoder_internal_t hb_video_encoders[]  =
     { { "MPEG-4",              "mpeg4",      "MPEG-4 (libavcodec)",     HB_VCODEC_FFMPEG_MPEG4, HB_MUX_MASK_MP4|HB_MUX_MASK_MKV, }, NULL, 1, HB_GID_VCODEC_MPEG4,  },
     { { "MPEG-2",              "mpeg2",      "MPEG-2 (libavcodec)",     HB_VCODEC_FFMPEG_MPEG2, HB_MUX_MASK_MP4|HB_MUX_MASK_MKV, }, NULL, 1, HB_GID_VCODEC_MPEG2,  },
     { { "VP8",                 "VP8",        "VP8 (libvpx)",            HB_VCODEC_FFMPEG_VP8,                   HB_MUX_MASK_MKV, }, NULL, 1, HB_GID_VCODEC_VP8,    },
+    { { "VP9",                 "VP9",        "VP9 (libvpx)",            HB_VCODEC_FFMPEG_VP9,                   HB_MUX_MASK_MKV, }, NULL, 1, HB_GID_VCODEC_VP9,    },
     { { "Theora",              "theora",     "Theora (libtheora)",      HB_VCODEC_THEORA,                       HB_MUX_MASK_MKV, }, NULL, 1, HB_GID_VCODEC_THEORA, },
 };
 int hb_video_encoders_count = sizeof(hb_video_encoders) / sizeof(hb_video_encoders[0]);
@@ -253,6 +263,7 @@ static int hb_video_encoder_is_enabled(int encoder)
         case HB_VCODEC_FFMPEG_MPEG4:
         case HB_VCODEC_FFMPEG_MPEG2:
         case HB_VCODEC_FFMPEG_VP8:
+        case HB_VCODEC_FFMPEG_VP9:
             return 1;
 
 #ifdef USE_X265
@@ -262,7 +273,7 @@ static int hb_video_encoder_is_enabled(int encoder)
         case HB_VCODEC_X265_16BIT:
         {
             const x265_api *api;
-            api = x265_api_get(hb_video_encoder_get_depth(encoder));
+            api = x265_api_query(hb_video_encoder_get_depth(encoder), X265_BUILD, NULL);
             return (api != NULL);
         };
 #endif
@@ -316,6 +327,7 @@ hb_encoder_internal_t hb_audio_encoders[]  =
     { { "FLAC 16-bit",        "flac16",     "FLAC 16-bit (libavcodec)",    HB_ACODEC_FFFLAC,                      HB_MUX_MASK_MKV, }, NULL, 1, HB_GID_ACODEC_FLAC,       },
     { { "FLAC 24-bit",        "flac24",     "FLAC 24-bit (libavcodec)",    HB_ACODEC_FFFLAC24,                    HB_MUX_MASK_MKV, }, NULL, 1, HB_GID_ACODEC_FLAC,       },
     { { "FLAC Passthru",      "copy:flac",  "FLAC Passthru",               HB_ACODEC_FLAC_PASS,                   HB_MUX_MASK_MKV, }, NULL, 1, HB_GID_ACODEC_FLAC_PASS,  },
+    { { "Opus",               "opus",     "Opus (libopus)",                HB_ACODEC_OPUS,                        HB_MUX_MASK_MKV, }, NULL, 1, HB_GID_ACODEC_OPUS,     },
     { { "Auto Passthru",      "copy",       "Auto Passthru",               HB_ACODEC_AUTO_PASS,   HB_MUX_MASK_MP4|HB_MUX_MASK_MKV, }, NULL, 1, HB_GID_ACODEC_AUTO_PASS,  },
 };
 int hb_audio_encoders_count = sizeof(hb_audio_encoders) / sizeof(hb_audio_encoders[0]);
@@ -352,6 +364,9 @@ static int hb_audio_encoder_is_enabled(int encoder)
         case HB_ACODEC_FFFLAC:
         case HB_ACODEC_FFFLAC24:
             return avcodec_find_encoder(AV_CODEC_ID_FLAC) != NULL;
+
+        case HB_ACODEC_OPUS:
+            return avcodec_find_encoder(AV_CODEC_ID_OPUS) != NULL;
 
         // the following encoders are always enabled
         case HB_ACODEC_LAME:
@@ -590,8 +605,7 @@ void hb_common_global_init()
                     break;
                 }
             }
-            if ((hb_audio_encoders[i].item.codec & HB_ACODEC_MASK) == 0 &&
-                (hb_audio_encoders[i].gid == HB_GID_ACODEC_AAC_HE))
+            if (hb_audio_encoders[i].gid == HB_GID_ACODEC_AAC_HE)
             {
                 // try to find an AAC fallback if no HE-AAC encoder is available
                 for (j = 0; j < hb_audio_encoders_count; j++)
@@ -735,56 +749,56 @@ int hb_video_framerate_get_close(hb_rational_t *framerate, double thresh)
     return result;
 }
 
-int hb_audio_samplerate_get_best(uint32_t codec, int samplerate, int *sr_shift)
+int hb_audio_samplerate_is_supported(int samplerate, uint32_t codec)
 {
-    int best_samplerate;
-    if (samplerate < 32000 && (codec == HB_ACODEC_AC3    ||
-                               codec == HB_ACODEC_FFEAC3 ||
-                               codec == HB_ACODEC_CA_HAAC))
+    switch (codec)
     {
-        // ca_haac can't do samplerates < 32 kHz
-        // libav's E-AC-3 encoder can't do samplerates < 32 kHz
-        // AC-3 < 32 kHz suffers from poor hardware compatibility
-        best_samplerate = 32000;
-    }
-    else if (samplerate < 16000 && codec == HB_ACODEC_FDK_HAAC)
-    {
-        // fdk_haac can't do samplerates < 16 kHz
-        best_samplerate = 16000;
-    }
-    else
-    {
-        best_samplerate                   = hb_audio_rates_first_item->rate;
-        const hb_rate_t *audio_samplerate = NULL;
-        while ((audio_samplerate = hb_audio_samplerate_get_next(audio_samplerate)) != NULL)
-        {
-            if (samplerate == audio_samplerate->rate)
+        case HB_ACODEC_AC3:
+        case HB_ACODEC_FFEAC3:
+        case HB_ACODEC_CA_HAAC:
+            // ca_haac can't do samplerates < 32 kHz
+            // libav's E-AC-3 encoder can't do samplerates < 32 kHz
+            // AC-3 < 32 kHz suffers from poor hardware compatibility
+            if (samplerate < 32000)
+                return 0;
+            else
+                return 1;
+        case HB_ACODEC_FDK_HAAC:
+            // fdk_haac can't do samplerates < 16 kHz
+            if (samplerate < 16000)
+                return 0;
+             else
+                return 1;
+        case HB_ACODEC_OPUS:
+            switch (samplerate)
             {
-                // valid samplerate
-                best_samplerate = audio_samplerate->rate;
-                break;
+                // Opus only supports samplerates 8kHz, 12kHz, 16kHz,
+                // 24kHz, 48kHz
+                case 8000:
+                case 12000:
+                case 16000:
+                case 24000:
+                case 48000:
+                    return 1;
+                default:
+                    return 0;
             }
-            if (samplerate > audio_samplerate->rate)
-            {
-                // samplerates are sanitized downwards
-                best_samplerate = audio_samplerate->rate;
-            }
-        }
+        default:
+            return 1;
     }
-    if (sr_shift != NULL)
-    {
-        /* sr_shift: 0 -> 48000, 44100, 32000 Hz
-         *           1 -> 24000, 22050, 16000 Hz
-         *           2 -> 12000, 11025,  8000 Hz
-         *
-         * also, since samplerates are sanitized downwards:
-         *
-         * (samplerate < 32000) implies (samplerate <= 24000)
-         */
-        *sr_shift = ((best_samplerate < 16000) ? 2 :
-                     (best_samplerate < 32000) ? 1 : 0);
-    }
-    return best_samplerate;
+}
+
+int hb_audio_samplerate_get_sr_shift(int samplerate)
+{
+    /* sr_shift: 0 -> 48000, 44100, 32000 Hz
+     *           1 -> 24000, 22050, 16000 Hz
+     *           2 -> 12000, 11025,  8000 Hz
+     *
+     * also, since samplerates are sanitized downwards:
+     *
+     * (samplerate < 32000) implies (samplerate <= 24000)
+     */
+    return ((samplerate < 16000) ? 2 : (samplerate < 32000) ? 1 : 0);
 }
 
 int hb_audio_samplerate_get_from_name(const char *name)
@@ -806,7 +820,7 @@ int hb_audio_samplerate_get_from_name(const char *name)
     if (i >= hb_audio_rates_first_item->rate &&
         i <= hb_audio_rates_last_item ->rate)
     {
-        return hb_audio_samplerate_get_best(0, i, NULL);
+        return hb_audio_samplerate_find_closest(i, HB_ACODEC_INVALID);
     }
 
 fail:
@@ -839,6 +853,44 @@ const hb_rate_t* hb_audio_samplerate_get_next(const hb_rate_t *last)
         return hb_audio_rates_first_item;
     }
     return ((hb_rate_internal_t*)last)->next;
+}
+
+const hb_rate_t* hb_audio_samplerate_get_next_for_codec(const hb_rate_t *last,
+                                                        uint32_t codec)
+{
+    while ((last = hb_audio_samplerate_get_next(last)) != NULL)
+        if (hb_audio_samplerate_is_supported(last->rate, codec))
+            return last;
+
+    // None found or end of list
+    return NULL;
+}
+
+int hb_audio_samplerate_find_closest(int samplerate, uint32_t codec)
+{
+    const hb_rate_t * rate, * prev, * next;
+
+    rate = prev = next = hb_audio_samplerate_get_next_for_codec(NULL, codec);
+    while (rate != NULL && next->rate < samplerate)
+    {
+        rate = hb_audio_samplerate_get_next_for_codec(rate, codec);
+        if (rate != NULL)
+        {
+            prev = next;
+            next = rate;
+        }
+    }
+
+    int delta_prev = samplerate - prev->rate;
+    int delta_next = next->rate - samplerate;
+    if (delta_prev <= delta_next)
+    {
+        return prev->rate;
+    }
+    else
+    {
+        return next->rate;
+    }
 }
 
 // Given an input bitrate, find closest match in the set of allowed bitrates
@@ -887,11 +939,11 @@ int hb_audio_bitrate_get_default(uint32_t codec, int samplerate, int mixdown)
     if ((codec & HB_ACODEC_PASS_FLAG) || !(codec & HB_ACODEC_MASK))
         goto fail;
 
-    int bitrate, nchannels, sr_shift;
+    int bitrate, nchannels, nlfe, sr_shift;
     /* full-bandwidth channels, sr_shift */
-    nchannels = (hb_mixdown_get_discrete_channel_count(mixdown) -
-                 hb_mixdown_get_low_freq_channel_count(mixdown));
-    hb_audio_samplerate_get_best(codec, samplerate, &sr_shift);
+    nlfe      = hb_mixdown_get_low_freq_channel_count(mixdown);
+    nchannels = hb_mixdown_get_discrete_channel_count(mixdown) - nlfe;
+    sr_shift  = hb_audio_samplerate_get_sr_shift(samplerate);
 
     switch (codec)
     {
@@ -916,6 +968,14 @@ int hb_audio_bitrate_get_default(uint32_t codec, int samplerate, int mixdown)
         case HB_ACODEC_FDK_HAAC:
             bitrate = nchannels * 32;
             break;
+
+        case HB_ACODEC_OPUS:
+        {
+            int coupled = mixdown_get_opus_coupled_stream_count(mixdown);
+            int uncoupled = nchannels + nlfe - 2 * coupled;
+
+            bitrate = coupled * 96 + uncoupled * 64;
+        } break;
 
         default:
             bitrate = nchannels * 80;
@@ -1063,7 +1123,8 @@ void hb_audio_bitrate_get_limits(uint32_t codec, int samplerate, int mixdown,
 
     /* samplerate, sr_shift */
     int sr_shift;
-    samplerate = hb_audio_samplerate_get_best(codec, samplerate, &sr_shift);
+    samplerate = hb_audio_samplerate_find_closest(samplerate, codec);
+    sr_shift = hb_audio_samplerate_get_sr_shift(samplerate);
 
     /* LFE, full-bandwidth channels */
     int lfe_count, nchannels;
@@ -1167,6 +1228,11 @@ void hb_audio_bitrate_get_limits(uint32_t codec, int samplerate, int mixdown,
                                                ( 50 * (samplerate >= 44100)));
             break;
 
+        case HB_ACODEC_OPUS:
+            *low  = (nchannels + lfe_count) * 6;
+            *high = (nchannels + lfe_count) * 256;
+            break;
+
         // Bitrates don't apply to passthrough audio, but may apply if we
         // fall back to an encoder when the source can't be passed through.
         default:
@@ -1211,17 +1277,38 @@ void hb_video_quality_get_limits(uint32_t codec, float *low, float *high,
 
     switch (codec)
     {
+        /*
+         * H.264/H.265: *low
+         * = 51 - (QP_MAX_SPEC)
+         * = 51 - (51 + QP_BD_OFFSET)
+         * =  0 - (QP_BD_OFFSET)
+         * =  0 - (6*(BIT_DEPTH-8))     (libx264)
+         * =  0 - (6*(X265_DEPTH-8))    (libx265)
+         */
         case HB_VCODEC_X264_8BIT:
-        case HB_VCODEC_X264_10BIT:
-#ifdef USE_X265
         case HB_VCODEC_X265_8BIT:
-        case HB_VCODEC_X265_10BIT:
-        case HB_VCODEC_X265_12BIT:
-        case HB_VCODEC_X265_16BIT:
-#endif
             *direction   = 1;
             *granularity = 0.1;
             *low         = 0.;
+            *high        = 51.;
+            break;
+        case HB_VCODEC_X264_10BIT:
+        case HB_VCODEC_X265_10BIT:
+            *direction   = 1;
+            *granularity = 0.1;
+            *low         = -12.;
+            *high        = 51.;
+            break;
+        case HB_VCODEC_X265_12BIT:
+            *direction   = 1;
+            *granularity = 0.1;
+            *low         = -24.;
+            *high        = 51.;
+            break;
+        case HB_VCODEC_X265_16BIT:
+            *direction   = 1;
+            *granularity = 0.1;
+            *low         = -48.;
             *high        = 51.;
             break;
 
@@ -1233,6 +1320,7 @@ void hb_video_quality_get_limits(uint32_t codec, float *low, float *high,
             break;
 
         case HB_VCODEC_FFMPEG_VP8:
+        case HB_VCODEC_FFMPEG_VP9:
             *direction   = 1;
             *granularity = 1.;
             *low         = 0.;
@@ -1263,15 +1351,14 @@ const char* hb_video_quality_get_name(uint32_t codec)
     {
         case HB_VCODEC_X264_8BIT:
         case HB_VCODEC_X264_10BIT:
-#ifdef USE_X265
         case HB_VCODEC_X265_8BIT:
         case HB_VCODEC_X265_10BIT:
         case HB_VCODEC_X265_12BIT:
         case HB_VCODEC_X265_16BIT:
-#endif
             return "RF";
 
         case HB_VCODEC_FFMPEG_VP8:
+        case HB_VCODEC_FFMPEG_VP9:
             return "CQ";
 
         default:
@@ -1303,6 +1390,11 @@ const char* const* hb_video_encoder_get_presets(int encoder)
         return hb_qsv_preset_get_names();
     }
 #endif
+
+    if (encoder & HB_VCODEC_FFMPEG_MASK)
+    {
+        return hb_av_preset_get_names(encoder);
+    }
 
     switch (encoder)
     {
@@ -1512,6 +1604,13 @@ void hb_audio_compression_get_limits(uint32_t codec, float *low, float *high,
             *low         = 0.;
             break;
 
+        case HB_ACODEC_OPUS:
+            *direction   = 0;
+            *granularity = 1.;
+            *high        = 10.;
+            *low         = 0.;
+            break;
+
         default:
             *direction   = 0;
             *granularity = 1.;
@@ -1542,6 +1641,9 @@ float hb_audio_compression_get_default(uint32_t codec)
 
         case HB_ACODEC_LAME:
             return 2.;
+
+        case HB_ACODEC_OPUS:
+            return 10.;
 
         default:
             return -1.;
@@ -1625,6 +1727,34 @@ const hb_dither_t* hb_audio_dither_get_next(const hb_dither_t *last)
     return ((hb_dither_internal_t*)last)->next;
 }
 
+static int mixdown_get_opus_coupled_stream_count(int mixdown)
+{
+    switch (mixdown)
+    {
+        case HB_AMIXDOWN_7POINT1:
+        case HB_AMIXDOWN_6POINT1:
+            return 3;
+
+        case HB_AMIXDOWN_5POINT1:
+            return 2;
+
+        case HB_AMIXDOWN_MONO:
+        case HB_AMIXDOWN_LEFT:
+        case HB_AMIXDOWN_RIGHT:
+            return 0;
+
+        case HB_AMIXDOWN_NONE:
+        case HB_INVALID_AMIXDOWN:
+        case HB_AMIXDOWN_5_2_LFE:
+            // The 5F/2R/LFE configuration is currently not supported by Opus,
+            // so don't set coupled streams.
+            return 0;
+
+        default:
+            return 1;
+    }
+}
+
 int hb_mixdown_is_supported(int mixdown, uint32_t codec, uint64_t layout)
 {
     return (hb_mixdown_has_codec_support(mixdown, codec) &&
@@ -1646,6 +1776,7 @@ int hb_mixdown_has_codec_support(int mixdown, uint32_t codec)
         case HB_ACODEC_VORBIS:
         case HB_ACODEC_FFFLAC:
         case HB_ACODEC_FFFLAC24:
+        case HB_ACODEC_OPUS:
             return (mixdown <= HB_AMIXDOWN_7POINT1);
 
         case HB_ACODEC_LAME:
@@ -1798,6 +1929,7 @@ int hb_mixdown_get_default(uint32_t codec, uint64_t layout)
         // the FLAC encoder defaults to the best mixdown up to 7.1
         case HB_ACODEC_FFFLAC:
         case HB_ACODEC_FFFLAC24:
+        case HB_ACODEC_OPUS:
             mixdown = HB_AMIXDOWN_7POINT1;
             break;
 
@@ -2256,9 +2388,8 @@ void hb_autopassthru_apply_settings(hb_job_t *job)
                 if (audio->config.out.samplerate <= 0)
                     audio->config.out.samplerate = audio->config.in.samplerate;
                 audio->config.out.samplerate =
-                    hb_audio_samplerate_get_best(audio->config.out.codec,
-                                                 audio->config.out.samplerate,
-                                                 NULL);
+                    hb_audio_samplerate_find_closest(
+                        audio->config.out.samplerate, audio->config.out.codec);
                 int quality_not_allowed =
                     hb_audio_quality_get_default(audio->config.out.codec)
                             == HB_INVALID_AUDIO_QUALITY;
@@ -2666,8 +2797,8 @@ void hb_buffer_list_append(hb_buffer_list_t *list, hb_buffer_t *buf)
     size += buf->size;
     while (end != NULL && end->next != NULL)
     {
-        size += end->size;
         end = end->next;
+        size += end->size;
         count++;
     }
     if (list->tail == NULL)
@@ -2699,8 +2830,8 @@ void hb_buffer_list_prepend(hb_buffer_list_t *list, hb_buffer_t *buf)
     size += buf->size;
     while (end != NULL && end->next != NULL)
     {
-        size += end->size;
         end = end->next;
+        size += end->size;
         count++;
     }
     if (list->tail == NULL)
@@ -2758,7 +2889,7 @@ hb_buffer_t* hb_buffer_list_rem_tail(hb_buffer_list_t *list)
     else if (list->tail != NULL)
     {
         hb_buffer_t *end = list->head;
-        while (end != NULL && end->next != list->tail)
+        while (end->next != list->tail)
         {
             end = end->next;
         }
@@ -2772,6 +2903,40 @@ hb_buffer_t* hb_buffer_list_rem_tail(hb_buffer_list_t *list)
         tail->next = NULL;
     }
     return tail;
+}
+
+hb_buffer_t* hb_buffer_list_rem(hb_buffer_list_t *list, hb_buffer_t * b)
+{
+    hb_buffer_t * a;
+
+    if (list == NULL)
+    {
+        return NULL;
+    }
+    if (b == list->head)
+    {
+        return hb_buffer_list_rem_head(list);
+    }
+    a = list->head;
+    while (a != NULL && a->next != b)
+    {
+        a = a->next;
+    }
+    if (a == NULL)
+    {
+        // Buffer is not in the list
+        return NULL;
+    }
+    list->count--;
+    list->size -= b->size;
+    a->next = b->next;
+    if (list->tail == b)
+    {
+        list->tail = a;
+    }
+    b->next = NULL;
+
+    return b;
 }
 
 hb_buffer_t* hb_buffer_list_head(hb_buffer_list_t *list)
@@ -3466,7 +3631,7 @@ static void job_setup(hb_job_t * job, hb_title_t * title)
     job->par = resultGeo.par;
 
     job->vcodec     = HB_VCODEC_FFMPEG_MPEG4;
-    job->vquality   = -1.0;
+    job->vquality   = HB_INVALID_VIDEO_QUALITY;
     job->vbitrate   = 1000;
     job->twopass    = 0;
     job->pass_id    = HB_PASS_ENCODE;
@@ -3483,7 +3648,7 @@ static void job_setup(hb_job_t * job, hb_title_t * title)
 
 #ifdef USE_QSV
     job->qsv.enc_info.is_init_done = 0;
-    job->qsv.async_depth           = AV_QSV_ASYNC_DEPTH_DEFAULT;
+    job->qsv.async_depth           = HB_QSV_ASYNC_DEPTH_DEFAULT;
     job->qsv.decode                = !!(title->video_decode_support &
                                         HB_DECODE_SUPPORT_QSV);
 #endif
@@ -3691,7 +3856,7 @@ hb_filter_object_t * hb_filter_copy( hb_filter_object_t * filter )
     hb_filter_object_t * filter_copy = malloc( sizeof( hb_filter_object_t ) );
     memcpy( filter_copy, filter, sizeof( hb_filter_object_t ) );
     if( filter->settings )
-        filter_copy->settings = strdup( filter->settings );
+        filter_copy->settings = hb_value_dup(filter->settings);
     return filter_copy;
 }
 
@@ -3719,18 +3884,43 @@ hb_list_t *hb_filter_list_copy(const hb_list_t *src)
     return list;
 }
 
+hb_filter_object_t * hb_filter_find(const hb_list_t *list, int filter_id)
+{
+    hb_filter_object_t *filter = NULL;
+    int ii;
+
+    if (list == NULL)
+    {
+        return NULL;
+    }
+    for (ii = 0; ii < hb_list_count(list); ii++)
+    {
+        filter = hb_list_item(list, ii);
+        if (filter->id == filter_id)
+        {
+            return filter;
+        }
+    }
+
+    return NULL;
+}
+
 /**
  * Gets a filter object with the given type
  * @param filter_id The type of filter to get.
  * @returns The requested filter object.
  */
-hb_filter_object_t * hb_filter_init( int filter_id )
+hb_filter_object_t * hb_filter_get( int filter_id )
 {
     hb_filter_object_t * filter;
     switch( filter_id )
     {
         case HB_FILTER_DETELECINE:
             filter = &hb_filter_detelecine;
+            break;
+
+        case HB_FILTER_COMB_DETECT:
+            filter = &hb_filter_comb_detect;
             break;
 
         case HB_FILTER_DECOMB:
@@ -3765,6 +3955,14 @@ hb_filter_object_t * hb_filter_init( int filter_id )
             filter = &hb_filter_crop_scale;
             break;
 
+        case HB_FILTER_AVFILTER:
+            filter = &hb_filter_avfilter;
+            break;
+
+        case HB_FILTER_PAD:
+            filter = &hb_filter_pad;
+            break;
+
         case HB_FILTER_ROTATE:
             filter = &hb_filter_rotate;
             break;
@@ -3791,7 +3989,12 @@ hb_filter_object_t * hb_filter_init( int filter_id )
             filter = NULL;
             break;
     }
-    return hb_filter_copy( filter );
+    return filter;
+}
+
+hb_filter_object_t * hb_filter_init( int filter_id )
+{
+    return hb_filter_copy(hb_filter_get(filter_id));
 }
 
 /**********************************************************************
@@ -3803,11 +4006,314 @@ void hb_filter_close( hb_filter_object_t ** _f )
 {
     hb_filter_object_t * f = *_f;
 
-    if( f->settings )
-        free( f->settings );
+    hb_value_free(&f->settings);
 
     free( f );
     *_f = NULL;
+}
+
+/**********************************************************************
+ * hb_filter_info_close
+ **********************************************************************
+ *
+ *********************************************************************/
+void hb_filter_info_close( hb_filter_info_t ** _fi )
+{
+    hb_filter_info_t * fi = *_fi;
+
+    if (fi != NULL)
+    {
+        free(fi->human_readable_desc);
+    }
+
+    free( fi );
+    *_fi = NULL;
+}
+
+static char * append_string(char * dst, const char * src)
+{
+    int dst_len = 0, src_len, len;
+
+    if (src == NULL)
+    {
+        return dst;
+    }
+
+    src_len = len = strlen(src) + 1;
+    if (dst != NULL)
+    {
+        dst_len = strlen(dst);
+        len += dst_len;
+    }
+    char * tmp = realloc(dst, len);
+    if (tmp == NULL)
+    {
+        // Failed to allocate required space
+        return dst;
+    }
+    dst = tmp;
+    memcpy(dst + dst_len, src, src_len);
+    return dst;
+}
+
+static char * stringify_array(int filter_id, hb_value_array_t * array)
+{
+    char * result = strdup("");
+    int    ii;
+    int    len = hb_value_array_len(array);
+    int    first = 1;
+
+    if (hb_value_array_len(array) == 0)
+    {
+        return result;
+    }
+    for (ii = 0; ii < len; ii++)
+    {
+        hb_value_t * val = hb_value_array_get(array, ii);
+        char       * str = hb_filter_settings_string(filter_id, val);
+        if (str != NULL)
+        {
+            if (!first)
+            {
+                result = append_string(result, ",");
+            }
+            first = 0;
+            if (hb_value_type(val) == HB_VALUE_TYPE_DICT)
+            {
+                result = append_string(result, str);
+            }
+            else if (hb_value_type(val) == HB_VALUE_TYPE_ARRAY)
+            {
+                result = append_string(result, "[");
+                result = append_string(result, str);
+                result = append_string(result, "]");
+            }
+            else
+            {
+                result = append_string(result, str);
+            }
+            free(str);
+        }
+    }
+
+    return result;
+}
+
+static char * stringify_dict(int filter_id, hb_dict_t * dict)
+{
+    char            * result = strdup("");
+    const char      * key;
+    char           ** keys = NULL;
+    hb_value_t      * val;
+    hb_dict_iter_t    iter;
+    int               first = 1;
+
+    if (hb_dict_elements(dict) == 0)
+    {
+        return result;
+    }
+    // Check for dict containing rational value
+    if (hb_dict_elements(dict) == 2)
+    {
+        hb_value_t *num_val = hb_dict_get(dict, "Num");
+        hb_value_t *den_val = hb_dict_get(dict, "Den");
+        if (num_val != NULL && den_val != NULL &&
+            hb_value_type(num_val) == HB_VALUE_TYPE_INT &&
+            hb_value_type(den_val) == HB_VALUE_TYPE_INT)
+        {
+            int num = hb_value_get_int(num_val);
+            int den = hb_value_get_int(den_val);
+            char * str = hb_strdup_printf("%d/%d", num, den);
+            result = append_string(result, str);
+            free(str);
+            return result;
+        }
+    }
+    hb_filter_object_t * filter = hb_filter_get(filter_id);
+    if (filter != NULL)
+    {
+        keys = hb_filter_get_keys(filter_id);
+        if (keys != NULL && keys[0] == NULL)
+        {
+            hb_str_vfree(keys);
+            keys = NULL;
+        }
+    }
+
+    int done, ii = 0;
+    iter = hb_dict_iter_init(dict);
+    if (keys == NULL)
+    {
+        done = !hb_dict_iter_next_ex(dict, &iter, &key, NULL);
+    }
+    else
+    {
+        done = (key = keys[ii]) == NULL;
+    }
+    while (!done)
+    {
+        val = hb_dict_get(dict, key);
+        if (val != NULL)
+        {
+            if (!first)
+            {
+                result = append_string(result, ":");
+            }
+            first = 0;
+            result = append_string(result, key);
+            int elements = 1;
+
+            if (hb_value_type(val) == HB_VALUE_TYPE_NULL)
+            {
+                elements = 0;
+            }
+            else if (hb_value_type(val) == HB_VALUE_TYPE_DICT)
+            {
+                elements = hb_dict_elements(val);
+            }
+            else if (hb_value_type(val) == HB_VALUE_TYPE_ARRAY)
+            {
+                elements = hb_value_array_len(val);
+            }
+            if (elements != 0)
+            {
+                char * str = hb_filter_settings_string(filter_id, val);
+                if (str != NULL)
+                {
+                    result = append_string(result, "=");
+                    if (hb_value_type(val) == HB_VALUE_TYPE_DICT)
+                    {
+                        result = append_string(result, "'");
+                        result = append_string(result, str);
+                        result = append_string(result, "'");
+                    }
+                    else if (hb_value_type(val) == HB_VALUE_TYPE_ARRAY)
+                    {
+                        result = append_string(result, "[");
+                        result = append_string(result, str);
+                        result = append_string(result, "]");
+                    }
+                    else
+                    {
+                        result = append_string(result, str);
+                    }
+                    free(str);
+                }
+            }
+        }
+        ii++;
+        if (keys == NULL)
+        {
+            done = !hb_dict_iter_next_ex(dict, &iter, &key, NULL);
+        }
+        else
+        {
+            done = (key = keys[ii]) == NULL;
+        }
+    }
+    hb_str_vfree(keys);
+
+    return result;
+}
+
+char * hb_filter_settings_string(int filter_id, hb_value_t * value)
+{
+    if (value == NULL || hb_value_type(value) == HB_VALUE_TYPE_NULL)
+    {
+        return strdup("");
+    }
+    if (hb_value_type(value) == HB_VALUE_TYPE_DICT)
+    {
+        return stringify_dict(filter_id, value);
+    }
+    if (hb_value_type(value) == HB_VALUE_TYPE_ARRAY)
+    {
+        return stringify_array(filter_id, value);
+    }
+    return hb_value_get_string_xform(value);
+}
+
+char * hb_filter_settings_string_json(int filter_id, const char * json)
+{
+    hb_value_t * value  = hb_value_json(json);
+    char       * result = hb_filter_settings_string(filter_id, value);
+    hb_value_free(&value);
+
+    return result;
+}
+
+hb_dict_t * hb_parse_filter_settings(const char * settings_str)
+{
+    hb_dict_t  * dict = hb_dict_init();
+    char      ** settings_list = hb_str_vsplit(settings_str, ':');
+    int          ii;
+
+    for (ii = 0; settings_list[ii] != NULL; ii++)
+    {
+        char * key, * value;
+        char ** settings_pair = hb_str_vsplit(settings_list[ii], '=');
+        if (settings_pair[0] == NULL || settings_pair[1] == NULL)
+        {
+            // Parse error. Not key=value pair.
+            hb_str_vfree(settings_list);
+            hb_str_vfree(settings_pair);
+            hb_value_free(&dict);
+            hb_log("hb_parse_filter_settings: Error parsing (%s)",
+                   settings_str);
+            return NULL;
+        }
+        key   = settings_pair[0];
+        value = settings_pair[1];
+
+        int last = strlen(value) - 1;
+        // Check if value was quoted dictionary and remove quotes
+        // and parse the sub-dictionary.  This should only happen
+        // for avfilter settings.
+        if (last > 0 && value[0] == '\'' && value[last] == '\'')
+        {
+            char * str = strdup(value + 1);
+            str[last - 1] = 0;
+            hb_dict_t * sub_dict = hb_parse_filter_settings(str);
+            free(str);
+            if (sub_dict == NULL)
+            {
+                // Parse error. Not key=value pair.
+                hb_str_vfree(settings_list);
+                hb_str_vfree(settings_pair);
+                hb_value_free(&dict);
+                hb_log("hb_parse_filter_settings: Error parsing (%s)",
+                       settings_str);
+                return NULL;
+            }
+            hb_dict_case_set(dict, key, sub_dict);
+        }
+        // Check if value was quoted string and remove quotes
+        else if (last > 0 && value[0] == '"' && value[last] == '"')
+        {
+            char * str = strdup(value + 1);
+            str[last - 1] = 0;
+            hb_dict_case_set(dict, key, hb_value_string(str));
+            free(str);
+        }
+        else
+        {
+            hb_dict_case_set(dict, key, hb_value_string(value));
+        }
+
+        hb_str_vfree(settings_pair);
+    }
+    hb_str_vfree(settings_list);
+
+    return dict;
+}
+
+char * hb_parse_filter_settings_json(const char * settings_str)
+{
+    hb_dict_t * dict = hb_parse_filter_settings(settings_str);
+    char      * result = hb_value_get_json(dict);
+    hb_value_free(&dict);
+
+    return result;
 }
 
 /**********************************************************************
@@ -4034,37 +4540,8 @@ int hb_audio_add(const hb_job_t * job, const hb_audio_config_t * audiocfg)
 
     /* Really shouldn't ignore the passed out track, but there is currently no
      * way to handle duplicates or out-of-order track numbers. */
+    audio->config.out = audiocfg->out;
     audio->config.out.track = hb_list_count(job->list_audio) + 1;
-    audio->config.out.codec = audiocfg->out.codec;
-    if((audiocfg->out.codec & HB_ACODEC_PASS_FLAG) &&
-       ((audiocfg->out.codec == HB_ACODEC_AUTO_PASS) ||
-        (audiocfg->out.codec & audio->config.in.codec & HB_ACODEC_PASS_MASK)))
-    {
-        /* Pass-through, copy from input. */
-        audio->config.out.samplerate = audio->config.in.samplerate;
-        audio->config.out.bitrate = audio->config.in.bitrate;
-        audio->config.out.mixdown = HB_AMIXDOWN_NONE;
-        audio->config.out.dynamic_range_compression = 0;
-        audio->config.out.gain = 0;
-        audio->config.out.normalize_mix_level = 0;
-        audio->config.out.compression_level = -1;
-        audio->config.out.quality = HB_INVALID_AUDIO_QUALITY;
-        audio->config.out.dither_method = hb_audio_dither_get_default();
-    }
-    else
-    {
-        /* Non pass-through, use what is given. */
-        audio->config.out.codec &= ~HB_ACODEC_PASS_FLAG;
-        audio->config.out.samplerate = audiocfg->out.samplerate;
-        audio->config.out.bitrate = audiocfg->out.bitrate;
-        audio->config.out.compression_level = audiocfg->out.compression_level;
-        audio->config.out.quality = audiocfg->out.quality;
-        audio->config.out.dynamic_range_compression = audiocfg->out.dynamic_range_compression;
-        audio->config.out.mixdown = audiocfg->out.mixdown;
-        audio->config.out.gain = audiocfg->out.gain;
-        audio->config.out.normalize_mix_level = audiocfg->out.normalize_mix_level;
-        audio->config.out.dither_method = audiocfg->out.dither_method;
-    }
     if (audiocfg->out.name && *audiocfg->out.name)
     {
         audio->config.out.name = strdup(audiocfg->out.name);
@@ -4843,3 +5320,197 @@ void hb_hexdump( hb_debug_level_t level, const char * label, const uint8_t * dat
         hb_deep_log( level, "    %-50s%20s", line, ascii );
     }
 }
+
+int hb_str_vlen(char **strv)
+{
+    int i;
+    if (strv == NULL)
+        return 0;
+    for (i = 0; strv[i]; i++);
+    return i;
+}
+
+static const char* strchr_quote(const char *pos, char c, char q)
+{
+    if (pos == NULL)
+        return NULL;
+
+    while (*pos != 0 && *pos != c)
+    {
+        if (*pos == q)
+        {
+            pos = strchr_quote(pos+1, q, 0);
+            if (pos == NULL)
+                return NULL;
+            pos++;
+        }
+        else if (*pos == '\\' && *(pos+1) != 0)
+            pos += 2;
+        else
+            pos++;
+    }
+    if (*pos != c)
+        return NULL;
+    return pos;
+}
+
+static char *strndup_quote(const char *str, char q, int len)
+{
+    if (str == NULL)
+        return NULL;
+
+    char * res;
+    int str_len = strlen( str );
+    int src = 0, dst = 0;
+    res = malloc( len > str_len ? str_len + 1 : len + 1 );
+    if ( res == NULL ) return res;
+
+    while (str[src] != 0 && src < len)
+    {
+        if (str[src] == q)
+            src++;
+        else if (str[src] == '\\' && str[src+1] != 0)
+        {
+            res[dst++] = str[src+1];
+            src += 2;
+        }
+        else
+            res[dst++] = str[src++];
+    }
+    res[dst] = '\0';
+    return res;
+}
+
+char** hb_str_vsplit( const char *str, char delem )
+{
+    const char *  pos;
+    const char *  end;
+    char       ** ret;
+    int           count, i;
+    char          quote = '"';
+
+    if (delem == '"')
+    {
+        quote = '\'';
+    }
+    if ( str == NULL || str[0] == 0 )
+    {
+        ret = malloc( sizeof(char*) );
+        if ( ret == NULL ) return ret;
+        *ret = NULL;
+        return ret;
+    }
+
+    // Find number of elements in the string
+    count = 1;
+    pos = str;
+    while ( ( pos = strchr_quote( pos, delem, quote ) ) != NULL )
+    {
+        count++;
+        pos++;
+    }
+
+    ret = calloc( ( count + 1 ), sizeof(char*) );
+    if ( ret == NULL ) return ret;
+
+    pos = str;
+    for ( i = 0; i < count - 1; i++ )
+    {
+        end = strchr_quote( pos, delem, quote );
+        ret[i] = strndup_quote(pos, quote, end - pos);
+        pos = end + 1;
+    }
+    ret[i] = strndup_quote(pos, quote, strlen(pos));
+
+    return ret;
+}
+
+void hb_str_vfree( char **strv )
+{
+    int i;
+
+    if (strv == NULL)
+        return;
+
+    for ( i = 0; strv[i]; i++ )
+    {
+        free( strv[i] );
+    }
+    free( strv );
+}
+
+hb_chapter_queue_t * hb_chapter_queue_init(void)
+{
+    hb_chapter_queue_t * q;
+
+    q = calloc(1, sizeof(*q));
+    if (q != NULL)
+    {
+        q->list_chapter = hb_list_init();
+        if (q->list_chapter == NULL)
+        {
+            free(q);
+            q = NULL;
+        }
+    }
+    return q;
+}
+
+void hb_chapter_queue_close(hb_chapter_queue_t **_q)
+{
+    hb_chapter_queue_t      * q = *_q;
+    hb_chapter_queue_item_t * item;
+
+    if (q == NULL)
+    {
+        return;
+    }
+    while ((item = hb_list_item(q->list_chapter, 0)) != NULL)
+    {
+        hb_list_rem(q->list_chapter, item);
+        free(item);
+    }
+    hb_list_close(&q->list_chapter);
+    free(q);
+    *_q = NULL;
+}
+
+void hb_chapter_enqueue(hb_chapter_queue_t *q, hb_buffer_t *buf)
+{
+    /*
+     * Chapter markers are sometimes so close we can get a new
+     * one before the previous goes through the encoding queue.
+     *
+     * Dropping markers can cause weird side-effects downstream,
+     * including but not limited to missing chapters in the
+     * output, so we need to save it somehow.
+     */
+    hb_chapter_queue_item_t *item = malloc(sizeof(hb_chapter_queue_item_t));
+    if (item != NULL)
+    {
+        item->start = buf->s.start;
+        item->new_chap = buf->s.new_chap;
+        // Make sure work_loop doesn't also copy the chapter mark
+        buf->s.new_chap = 0;
+        hb_list_add(q->list_chapter, item);
+    }
+}
+
+void hb_chapter_dequeue(hb_chapter_queue_t *q, hb_buffer_t *buf)
+{
+    hb_chapter_queue_item_t *item = hb_list_item(q->list_chapter, 0);
+    if (item != NULL)
+    {
+        if (buf->s.start < item->start)
+        {
+            // Have not reached the next chapter yet.
+            return;
+        }
+
+        // we're done with this chapter
+        hb_list_rem(q->list_chapter, item);
+        buf->s.new_chap = item->new_chap;
+        free(item);
+    }
+}
+

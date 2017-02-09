@@ -27,6 +27,7 @@
     {
         _name = @"New Preset";
         _presetDescription = @"";
+        _content = [[NSMutableDictionary alloc] init];
         self.isLeaf = YES;
     }
     return self;
@@ -263,8 +264,8 @@
 
     NSDictionary *dict = @{ @"PresetList": presetList,
                             @"VersionMajor": @(major),
-                            @"VersionMicro": @(minor),
-                            @"VersionMinor": @(micro) };
+                            @"VersionMinor": @(minor),
+                            @"VersionMicro": @(micro) };
 
     if (format == HBPresetFormatPlist)
     {

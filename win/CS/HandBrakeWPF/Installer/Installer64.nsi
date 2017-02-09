@@ -8,9 +8,9 @@
 
 ; HM NIS Edit Wizard helper defines
 !define PRODUCT_NAME "HandBrake"
-!define PRODUCT_VERSION "1.0.0"
-!define PRODUCT_VERSION_NUMBER "1.0.0"
-!define PRODUCT_DIR_REGKEY "Software\Microsoft\Windows\CurrentVersion\App Paths\HandBrake.exe"
+!define PRODUCT_VERSION "1.0.3"
+!define PRODUCT_VERSION_NUMBER "1.0.3"
+!define PRODUCT_DIR_REGKEY "Software\Microsoft\Windows\CurrentVersion\App Paths\${PRODUCT_NAME}"
 !define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
 !define PRODUCT_UNINST_ROOT_KEY "HKLM"
 
@@ -65,6 +65,10 @@ ShowUnInstDetails show
 Var InstallDotNET
 
 Function .onInit
+
+  ; For Silent Installs, Assume All Users
+  IfSilent 0 +2
+    SetShellVarContext all  
 
   ; Begin Only allow one version
   System::Call 'kernel32::CreateMutexA(i 0, i 0, t "myMutex") i .r1 ?e'
@@ -172,6 +176,11 @@ Function un.onUninstSuccess
 FunctionEnd
 
 Function un.onInit
+
+  ; For Silent Installs, Assume All Users
+  IfSilent 0 +2
+    SetShellVarContext all  
+
   MessageBox MB_ICONQUESTION|MB_YESNO|MB_DEFBUTTON2 "Are you sure you want to completely remove $(^Name) and all of its components?" /SD IDYES IDYES +2
   Abort
 FunctionEnd

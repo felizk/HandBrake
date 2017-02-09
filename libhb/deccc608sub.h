@@ -1,6 +1,6 @@
 /* deccc608sub.h
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -70,6 +70,7 @@ struct eia608
     int ssa_counter; // Number of subs currently written
     int screenfuls_counter; // Number of meaningful screenfuls written
     int64_t current_visible_start_ms; // At what time did the current visible buffer became so?
+    int64_t current_visible_scr_sequence; // At what SCR did the current visible buffer became so?
     enum cc_modes mode;
     unsigned char last_c1, last_c2;
     int channel; // Currently selected channel
@@ -88,7 +89,8 @@ struct s_write {
     hb_buffer_list_t list;
     hb_buffer_t *hb_buffer;
     hb_buffer_t *hb_last_buffer;
-    uint64_t last_pts;
+    int64_t last_pts;
+    int      last_scr_sequence;
     unsigned char *enc_buffer; // Generic general purpose buffer
     unsigned enc_buffer_used;
     unsigned enc_buffer_capacity;

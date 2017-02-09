@@ -5,12 +5,16 @@
  It may be used under the terms of the GNU General Public License. */
 
 #import "HBJob.h"
-#import "HBTitle.h"
+#import "HBJob+Private.h"
+#import "HBTitle+Private.h"
 
 #import "HBAudioDefaults.h"
 #import "HBSubtitlesDefaults.h"
+#import "HBMutablePreset.h"
 
 #import "HBCodingUtilities.h"
+#import "HBUtilities.h"
+#import "HBSecurityAccessToken.h"
 
 #include "hb.h"
 
@@ -18,7 +22,24 @@ NSString *HBContainerChangedNotification = @"HBContainerChangedNotification";
 NSString *HBChaptersChangedNotification  = @"HBChaptersChangedNotification";
 
 @interface HBJob ()
+
 @property (nonatomic, readonly) NSString *name;
+
+/**
+ Store the security scoped bookmarks, so we don't
+ regenerate it each time
+ */
+@property (nonatomic, readonly) NSData *fileURLBookmark;
+@property (nonatomic, readwrite) NSData *outputURLFolderBookmark;
+
+/**
+ Keep track of security scoped resources status.
+ */
+@property (nonatomic, readwrite) HBSecurityAccessToken *fileURLToken;
+@property (nonatomic, readwrite) HBSecurityAccessToken *outputURLToken;
+@property (nonatomic, readwrite) HBSecurityAccessToken *subtitlesToken;
+@property (nonatomic, readwrite) NSInteger *accessCount;
+
 @end
 
 @implementation HBJob
@@ -46,8 +67,8 @@ NSString *HBChaptersChangedNotification  = @"HBChaptersChangedNotification";
         _picture = [[HBPicture alloc] initWithTitle:title];
         _filters = [[HBFilters alloc] init];
 
-        _audio = [[HBAudio alloc] initWithTitle:title];
-        _subtitles = [[HBSubtitles alloc] initWithTitle:title];
+        _audio = [[HBAudio alloc] initWithJob:self];
+        _subtitles = [[HBSubtitles alloc] initWithJob:self];
 
         _chapterTitles = [title.chapters copy];
 
@@ -63,7 +84,10 @@ NSString *HBChaptersChangedNotification  = @"HBChaptersChangedNotification";
 
 - (void)applyPreset:(HBPreset *)preset
 {
+    NSAssert(self.title, @"HBJob: calling applyPreset: without a valid title loaded");
+
     self.presetName = preset.name;
+    NSDictionary *jobSettings = [self.title jobSettingsWithPreset:preset];
 
     self.container = hb_container_get_from_name([preset[@"FileFormat"] UTF8String]);
 
@@ -74,8 +98,11 @@ NSString *HBChaptersChangedNotification  = @"HBChaptersChangedNotification";
     // Chapter Markers
     self.chaptersEnabled = [preset[@"ChapterMarkers"] boolValue];
 
-    [@[self.audio, self.subtitles, self.filters, self.picture, self.video] makeObjectsPerformSelector:@selector(applyPreset:)
-                                                                                                           withObject:preset];
+    [self.picture applyPreset:preset jobSettings:jobSettings];
+    [self.filters applyPreset:preset jobSettings:jobSettings];
+    [self.audio applyPreset:preset jobSettings:jobSettings];
+    [self.subtitles applyPreset:preset jobSettings:jobSettings];
+    [self.video applyPreset:preset jobSettings:jobSettings];
 }
 
 - (void)writeToPreset:(HBMutablePreset *)preset
@@ -109,13 +136,32 @@ NSString *HBChaptersChangedNotification  = @"HBChaptersChangedNotification";
     _presetName = [presetName copy];
 }
 
-- (void)setDestURL:(NSURL *)destURL
+- (void)setOutputURL:(NSURL *)outputURL
 {
-    if (![destURL isEqualTo:_destURL])
+    if (![outputURL isEqualTo:_outputURL])
     {
-        [[self.undo prepareWithInvocationTarget:self] setDestURL:_destURL];
+        [[self.undo prepareWithInvocationTarget:self] setOutputURL:_outputURL];
     }
-    _destURL = [destURL copy];
+    _outputURL = [outputURL copy];
+
+#ifdef __SANDBOX_ENABLED__
+    // Clear we bookmark to regenerate it
+    self.outputURLFolderBookmark = nil;
+#endif
+}
+
+- (void)setOutputFileName:(NSString *)outputFileName
+{
+    if (![outputFileName isEqualTo:_outputFileName])
+    {
+        [[self.undo prepareWithInvocationTarget:self] setOutputFileName:_outputFileName];
+    }
+    _outputFileName = [outputFileName copy];
+}
+
+- (NSURL *)completeOutputURL
+{
+    return [self.outputURL URLByAppendingPathComponent:self.outputFileName];
 }
 
 - (void)setContainer:(int)container
@@ -178,26 +224,39 @@ NSString *HBChaptersChangedNotification  = @"HBChaptersChangedNotification";
     [[NSNotificationCenter defaultCenter] postNotificationName:HBChaptersChangedNotification object:self];
 }
 
-+ (NSSet *)keyPathsForValuesAffectingValueForKey:(NSString *)key
-{
-    NSSet *retval = nil;
-
-    if ([key isEqualToString:@"mp4OptionsEnabled"])
-    {
-        retval = [NSSet setWithObjects:@"container", nil];
-    }
-
-    if ([key isEqualToString:@"mp4iPodCompatibleEnabled"])
-    {
-        retval = [NSSet setWithObjects:@"container", @"video.encoder", nil];
-    }
-
-    return retval;
-}
-
 - (NSString *)description
 {
     return self.name;
+}
+
+- (BOOL)startAccessingSecurityScopedResource
+{
+#ifdef __SANDBOX_ENABLED__
+    if (self.accessCount == 0)
+    {
+        self.fileURLToken = [HBSecurityAccessToken tokenWithObject:self.fileURL];
+        self.outputURLToken = [HBSecurityAccessToken tokenWithObject:self.outputURL];
+        self.subtitlesToken = [HBSecurityAccessToken tokenWithObject:self.subtitles];
+    }
+    self.accessCount += 1;
+    return YES;
+#else
+    return NO;
+#endif
+}
+
+- (void)stopAccessingSecurityScopedResource
+{
+#ifdef __SANDBOX_ENABLED__
+    self.accessCount -= 1;
+    NSAssert(self.accessCount >= 0, @"[HBJob stopAccessingSecurityScopedResource:] unbalanced call");
+    if (self.accessCount == 0)
+    {
+        self.fileURLToken = nil;
+        self.outputURLToken = nil;
+        self.subtitlesToken = nil;
+    }
+#endif
 }
 
 #pragma mark - NSCopying
@@ -214,8 +273,12 @@ NSString *HBChaptersChangedNotification  = @"HBChaptersChangedNotification";
         copy->_titleIdx = _titleIdx;
         copy->_uuid = [[NSUUID UUID] UUIDString];
 
+        copy->_fileURLBookmark = [_fileURLBookmark copy];
+        copy->_outputURLFolderBookmark = [_outputURLFolderBookmark copy];
+
         copy->_fileURL = [_fileURL copy];
-        copy->_destURL = [_destURL copy];
+        copy->_outputURL = [_outputURL copy];
+        copy->_outputFileName = [_outputFileName copy];
 
         copy->_container = _container;
         copy->_angle = _angle;
@@ -230,7 +293,9 @@ NSString *HBChaptersChangedNotification  = @"HBChaptersChangedNotification";
         copy->_video.job = copy;
 
         copy->_audio = [_audio copy];
+        copy->_audio.job = copy;
         copy->_subtitles = [_subtitles copy];
+        copy->_subtitles.job = copy;
 
         copy->_chaptersEnabled = _chaptersEnabled;
         copy->_chapterTitles = [[NSArray alloc] initWithArray:_chapterTitles copyItems:YES];
@@ -248,7 +313,7 @@ NSString *HBChaptersChangedNotification  = @"HBChaptersChangedNotification";
 
 - (void)encodeWithCoder:(NSCoder *)coder
 {
-    [coder encodeInt:1 forKey:@"HBJobVersion"];
+    [coder encodeInt:3 forKey:@"HBJobVersion"];
 
     encodeInt(_state);
     encodeObject(_name);
@@ -256,8 +321,30 @@ NSString *HBChaptersChangedNotification  = @"HBChaptersChangedNotification";
     encodeInt(_titleIdx);
     encodeObject(_uuid);
 
+#ifdef __SANDBOX_ENABLED__
+    if (!_fileURLBookmark)
+    {
+        _fileURLBookmark = [HBUtilities bookmarkFromURL:_fileURL
+                                                options:NSURLBookmarkCreationWithSecurityScope |
+                                                        NSURLBookmarkCreationSecurityScopeAllowOnlyReadAccess];
+    }
+
+    encodeObject(_fileURLBookmark);
+
+    if (!_outputURLFolderBookmark)
+    {
+        __attribute__((unused)) HBSecurityAccessToken *token = [HBSecurityAccessToken tokenWithObject:_outputURL];
+        _outputURLFolderBookmark = [HBUtilities bookmarkFromURL:_outputURL];
+        token = nil;
+    }
+
+    encodeObject(_outputURLFolderBookmark);
+
+#endif
+
     encodeObject(_fileURL);
-    encodeObject(_destURL);
+    encodeObject(_outputURL);
+    encodeObject(_outputFileName);
 
     encodeInt(_container);
     encodeInt(_angle);
@@ -280,7 +367,7 @@ NSString *HBChaptersChangedNotification  = @"HBChaptersChangedNotification";
 {
     int version = [decoder decodeIntForKey:@"HBJobVersion"];
 
-    if (version == 1 && (self = [super init]))
+    if (version == 3 && (self = [super init]))
     {
         decodeInt(_state);
         decodeObject(_name, NSString);
@@ -288,8 +375,34 @@ NSString *HBChaptersChangedNotification  = @"HBChaptersChangedNotification";
         decodeInt(_titleIdx);
         decodeObject(_uuid, NSString);
 
+#ifdef __SANDBOX_ENABLED__
+        _fileURLBookmark = [HBCodingUtilities decodeObjectOfClass:[NSData class] forKey:@"_fileURLBookmark" decoder:decoder];
+
+        if (_fileURLBookmark)
+        {
+            _fileURL = [HBUtilities URLFromBookmark:_fileURLBookmark];
+        }
+        else
+        {
+            decodeObject(_fileURL, NSURL);
+        }
+
+        _outputURLFolderBookmark = [HBCodingUtilities decodeObjectOfClass:[NSData class] forKey:@"_outputURLFolderBookmark" decoder:decoder];
+
+        if (_outputURLFolderBookmark)
+        {
+            _outputURL = [HBUtilities URLFromBookmark:_outputURLFolderBookmark];
+        }
+        else
+        {
+            decodeObject(_outputURL, NSURL);
+        }
+#else
         decodeObject(_fileURL, NSURL);
-        decodeObject(_destURL, NSURL);
+        decodeObject(_outputURL, NSURL);
+#endif
+
+        decodeObject(_outputFileName, NSString);
 
         decodeInt(_container);
         decodeInt(_angle);
@@ -306,8 +419,11 @@ NSString *HBChaptersChangedNotification  = @"HBChaptersChangedNotification";
         decodeObject(_audio, HBAudio);
         decodeObject(_subtitles, HBSubtitles);
 
+        _audio.job = self;
+        _video.job = self;
+
         decodeBool(_chaptersEnabled);
-        decodeObject(_chapterTitles, NSArray);
+        decodeCollectionOfObjects(_chapterTitles, NSArray, HBChapter);
 
         return self;
     }

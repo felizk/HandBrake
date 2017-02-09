@@ -5,8 +5,10 @@
  It may be used under the terms of the GNU General Public License. */
 
 #import "HBTitle.h"
-#import "HBTitlePrivate.h"
+#import "HBTitle+Private.h"
 #import "HBChapter.h"
+#import "HBPreset.h"
+#import "NSDictionary+HBAdditions.h"
 
 #include "lang.h"
 
@@ -26,7 +28,8 @@ extern NSString *keySubTrackType;
 @interface HBTitle ()
 
 @property (nonatomic, readonly) hb_title_t *hb_title;
-@property (nonatomic, readwrite, strong) NSString *name;
+@property (nonatomic, readonly) hb_handle_t *hb_handle;
+@property (nonatomic, readwrite, copy) NSString *name;
 
 @property (nonatomic, readwrite) NSArray *audioTracks;
 @property (nonatomic, readwrite) NSArray *subtitlesTracks;
@@ -36,7 +39,7 @@ extern NSString *keySubTrackType;
 
 @implementation HBTitle
 
-- (instancetype)initWithTitle:(hb_title_t *)title featured:(BOOL)featured
+- (instancetype)initWithTitle:(hb_title_t *)title handle:(hb_handle_t *)handle featured:(BOOL)featured
 {
     self = [super init];
     if (self)
@@ -47,6 +50,7 @@ extern NSString *keySubTrackType;
         }
 
         _hb_title = title;
+        _hb_handle = handle;
         _featured = featured;
     }
 
@@ -58,6 +62,13 @@ extern NSString *keySubTrackType;
     if (!_name)
     {
         _name = @(self.hb_title->name);
+
+        // Use the bundle name for eyetv
+        NSURL *parentURL = self.url.URLByDeletingLastPathComponent;
+        if ([parentURL.pathExtension caseInsensitiveCompare:@"eyetv"] == NSOrderedSame)
+        {
+            _name = parentURL.URLByDeletingPathExtension.lastPathComponent;
+        }
 
         // If the name is empty use file/directory name
         if (_name.length == 0)
@@ -112,7 +123,8 @@ extern NSString *keySubTrackType;
 
 - (int)frames
 {
-    return (int) ((self.hb_title->duration / 90000.) * (self.hb_title->vrate.num / (double)self.hb_title->vrate.den));
+    double frames = (double)self.hb_title->duration / 90000.f * self.hb_title->vrate.num / self.hb_title->vrate.den;
+    return (int)ceil(frames);
 }
 
 - (NSString *)timeCode
@@ -167,16 +179,15 @@ extern NSString *keySubTrackType;
     if (!_audioTracks)
     {
         NSMutableArray *tracks = [NSMutableArray array];
-        hb_audio_config_t *audio;
         hb_list_t *list = self.hb_title->list_audio;
         int count = hb_list_count(list);
 
         // Initialize the audio list of available audio tracks from this title
         for (int i = 0; i < count; i++)
         {
-            audio = (hb_audio_config_t *) hb_list_audio_config_item(list, i);
+            hb_audio_config_t *audio = hb_list_audio_config_item(list, i);
             [tracks addObject: @{keyAudioTrackIndex: @(i + 1),
-                                           keyAudioTrackName: [NSString stringWithFormat: @"%d: %s", i, audio->lang.description],
+                                           keyAudioTrackName: [NSString stringWithFormat: @"%d: %@", i, @(audio->lang.description)],
                                            keyAudioInputBitrate: @(audio->in.bitrate / 1000),
                                            keyAudioInputSampleRate: @(audio->in.samplerate),
                                            keyAudioInputCodec: @(audio->in.codec),
@@ -196,15 +207,14 @@ extern NSString *keySubTrackType;
     if (!_subtitlesTracks)
     {
         NSMutableArray *tracks = [NSMutableArray array];
-        hb_subtitle_t *subtitle;
         hb_list_t *list = self.hb_title->list_subtitle;
         int count = hb_list_count(list);
 
         for (int i = 0; i < count; i++)
         {
-            subtitle = (hb_subtitle_t *) hb_list_item(self.hb_title->list_subtitle, i);
+            hb_subtitle_t *subtitle = hb_list_item(self.hb_title->list_subtitle, i);
 
-            /* Human-readable representation of subtitle->source */
+            // Human-readable representation of subtitle->source
             NSString *bitmapOrText  = subtitle->format == PICTURESUB ? @"Bitmap" : @"Text";
             NSString *subSourceName = @(hb_subsource_name(subtitle->source));
 
@@ -224,11 +234,11 @@ extern NSString *keySubTrackType;
     return _subtitlesTracks;
 }
 
-- (NSArray *)chapters
+- (NSArray<HBChapter *> *)chapters
 {
     if (!_chapters)
     {
-        NSMutableArray *chapters = [NSMutableArray array];
+        NSMutableArray<HBChapter *> *chapters = [NSMutableArray array];
 
         for (int i = 0; i < hb_list_count(self.hb_title->list_chapter); i++)
         {
@@ -239,7 +249,7 @@ extern NSString *keySubTrackType;
                 NSString *title;
                 if (chapter->title != NULL)
                 {
-                    title = [NSString stringWithFormat:@"%s", chapter->title];
+                    title = @(chapter->title);
                 }
                 else
                 {
@@ -256,6 +266,24 @@ extern NSString *keySubTrackType;
     }
 
     return _chapters;
+}
+
+- (NSDictionary *)jobSettingsWithPreset:(HBPreset *)preset
+{
+    NSDictionary *result = nil;
+
+    hb_dict_t *hb_preset = [preset content].hb_value;
+    hb_dict_t *job = hb_preset_job_init(self.hb_handle, self.hb_title->index, hb_preset);
+
+    if (job)
+    {
+        result = [[NSDictionary alloc] initWithHBDict:job];
+    }
+
+    hb_dict_free(&hb_preset);
+    hb_dict_free(&job);
+
+    return result;
 }
 
 @end

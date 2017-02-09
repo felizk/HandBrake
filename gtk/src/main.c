@@ -1,7 +1,7 @@
 /* -*- Mode: C; indent-tabs-mode: t; c-basic-offset: 4; tab-width: 4 -*- */
 /*
  * main.c
- * Copyright (C) John Stebbins 2008-2016 <stebbins@stebbins>
+ * Copyright (C) John Stebbins 2008-2017 <stebbins@stebbins>
  *
  * main.c is free software.
  *
@@ -661,6 +661,7 @@ typedef struct
 static gchar *dvd_device = NULL;
 static gchar *arg_preset = NULL;
 static gboolean ghb_debug = FALSE;
+static gchar *arg_config_dir = NULL;
 #if defined(_WIN32)
 static gboolean win32_console = FALSE;
 #endif
@@ -670,6 +671,7 @@ static GOptionEntry entries[] =
     { "device", 'd', 0, G_OPTION_ARG_FILENAME, &dvd_device, N_("The device or file to encode"), NULL },
     { "preset", 'p', 0, G_OPTION_ARG_STRING, &arg_preset, N_("The preset values to use for encoding"), NULL },
     { "debug",  'x', 0, G_OPTION_ARG_NONE, &ghb_debug, N_("Spam a lot"), NULL },
+    { "config", 'o', 0, G_OPTION_ARG_STRING, &arg_config_dir, N_("The path to override user config dir"), NULL },
 #if defined(_WIN32)
     { "console",'c', 0, G_OPTION_ARG_NONE, &win32_console, N_("Open a console for debug output"), NULL },
 #endif
@@ -721,21 +723,6 @@ G_MODULE_EXPORT void preview_hud_size_alloc_cb(GtkWidget *widget, signal_user_da
 // below before setting CSS properties on them.
 const gchar *MyCSS =
 "                                   \n\
-GtkRadioButton .button {            \n\
-    border-width: 0px;              \n\
-    padding: 0px;                   \n\
-}                                   \n\
-GtkComboBox {                       \n\
-    padding: 0px;                   \n\
-}                                   \n\
-GtkComboBox .button {               \n\
-    padding: 2px;                   \n\
-    border-width: 0px;              \n\
-}                                   \n\
-GtkEntry {                          \n\
-    padding: 4px 4px;               \n\
-}                                   \n\
-                                    \n\
 @define-color black  #000000;       \n\
 @define-color gray18 #2e2e2e;       \n\
 @define-color gray22 #383838;       \n\
@@ -745,10 +732,16 @@ GtkEntry {                          \n\
 @define-color gray46 #757575;       \n\
 @define-color white  #ffffff;       \n\
                                     \n\
-#preview_hud,                       \n\
+#preview_hud                        \n\
+{                                   \n\
+    border-radius: 20px;            \n\
+    background-color: alpha(@gray18, 0.8); \n\
+    color: @white;                  \n\
+}                                   \n\
+                                    \n\
 #live_preview_play,                 \n\
 #live_duration,                     \n\
-#preview_fullscreen                 \n\
+#preview_reset                      \n\
 {                                   \n\
     background: @black;             \n\
     background-color: @gray18;      \n\
@@ -767,25 +760,35 @@ GtkEntry {                          \n\
 #preview_frame                      \n\
 {                                   \n\
     background: @black;             \n\
-    background-color: @gray46;      \n\
+    background-color: alpha(@gray18, 0.0); \n\
     color: @white;                  \n\
 }                                   \n\
                                     \n\
-#preview_fullscreen:prelight        \n\
+"
+#if GTK_CHECK_VERSION(3, 20, 0)
+"\
+#preview_reset:hover                \n\
+"
+#else
+"\
+#preview_reset:prelight             \n\
+"
+#endif
+"\
 {                                   \n\
     background: @black;             \n\
     background-color: @gray32;      \n\
     color: @white;                  \n\
 }                                   \n\
                                     \n\
-#preview_fullscreen:active          \n\
+#preview_reset:active               \n\
 {                                   \n\
     background: @black;             \n\
     background-color: @gray32;      \n\
     color: @white;                  \n\
 }                                   \n\
                                     \n\
-#preview_fullscreen:active          \n\
+#preview_reset:active               \n\
 {                                   \n\
     background: @black;             \n\
     background-color: @gray32;      \n\
@@ -813,6 +816,12 @@ main(int argc, char *argv[])
     signal_user_data_t *ud;
     GError *error = NULL;
     GOptionContext *context;
+
+#if defined(_WIN32)
+    // Tell gdk pixbuf where it's loader config file is.
+    _putenv_s("GDK_PIXBUF_MODULE_FILE", "ghb.exe.local/loaders.cache");
+    _putenv_s("GST_PLUGIN_PATH", "lib/gstreamer-1.0");
+#endif
 
     hb_global_init();
 
@@ -889,6 +898,12 @@ main(int argc, char *argv[])
 #endif
     ghb_udev_init();
 
+    // Override user config dir
+    if (arg_config_dir != NULL)
+    {
+        ghb_override_user_config_dir(arg_config_dir);
+    }
+
     ghb_write_pid_file();
     ud = g_malloc0(sizeof(signal_user_data_t));
     ud->debug = ghb_debug;
@@ -926,7 +941,7 @@ main(int argc, char *argv[])
     gtk_widget_set_name(GHB_WIDGET(ud->builder, "live_encode_progress"), "live_encode_progress");
     gtk_widget_set_name(GHB_WIDGET(ud->builder, "live_duration"), "live_duration");
     gtk_widget_set_name(GHB_WIDGET(ud->builder, "preview_show_crop"), "preview_show_crop");
-    gtk_widget_set_name(GHB_WIDGET(ud->builder, "preview_fullscreen"), "preview_fullscreen");
+    gtk_widget_set_name(GHB_WIDGET(ud->builder, "preview_reset"), "preview_reset");
     gtk_widget_set_name(GHB_WIDGET(ud->builder, "activity_view"), "activity_view");
 
     // Redirect stderr to the activity window
@@ -1046,7 +1061,7 @@ main(int argc, char *argv[])
 
     gint window_width, window_height;
     GdkGeometry geo = {
-        -1, -1, 1920, 768, -1, -1, 10, 10, 0, 0, GDK_GRAVITY_NORTH_WEST
+        -1, -1, 1920, 1080, -1, -1, 10, 10, 0, 0, GDK_GRAVITY_NORTH_WEST
     };
     GdkWindowHints geo_mask;
     geo_mask = GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE | GDK_HINT_BASE_SIZE;
@@ -1186,6 +1201,12 @@ main(int argc, char *argv[])
     g_list_free(stack_switcher_children);
 
     gtk_window_resize(GTK_WINDOW(ghb_window), window_width, window_height);
+
+    ghb_set_custom_filter_tooltip(ud, "PictureDetelecineCustom",
+                                  "detelecine", HB_FILTER_DETELECINE);
+    ghb_set_custom_filter_tooltip(ud, "PictureCombDetectCustom",
+                                  "interlace detection", HB_FILTER_DETELECINE);
+
     gtk_widget_show(ghb_window);
 
     // Everything should be go-to-go.  Lets rock!

@@ -13,8 +13,9 @@
 #import "HBPreferencesController.h"
 #import "HBQueueController.h"
 #import "HBOutputPanelController.h"
-#import "HBCore.h"
 #import "HBController.h"
+
+@import HandBrakeKit;
 
 #define PRESET_FILE @"UserPresets.json"
 #define QUEUE_FILE @"Queue.hbqueue"
@@ -150,6 +151,7 @@
         [alert setInformativeText:NSLocalizedString(@"If you quit HandBrake your current encode will be reloaded into your queue at next launch. Do you want to quit anyway?", nil)];
         [alert addButtonWithTitle:NSLocalizedString(@"Quit", nil)];
         [alert addButtonWithTitle:NSLocalizedString(@"Don't Quit", nil)];
+        [alert.buttons[1] setKeyEquivalent:@"\E"];
         [alert setAlertStyle:NSCriticalAlertStyle];
 
         NSInteger result = [alert runModal];
@@ -290,7 +292,7 @@
 - (void)buildPresetsMenu
 {
     // First we remove all the preset menu items
-    // inserted previosly
+    // inserted previously
     NSArray *menuItems = [self.presetsMenu.itemArray copy];
     for (NSMenuItem *item in menuItems)
     {
@@ -300,42 +302,50 @@
         }
     }
 
-    __block NSUInteger i = 0;
-    __block BOOL builtInEnded = NO;
-    [self.presetsManager.root enumerateObjectsUsingBlock:^(id obj, NSIndexPath *idx, BOOL *stop)
-     {
-         if (idx.length)
-         {
-             NSMenuItem *item = [[NSMenuItem alloc] init];
-             item.title = [obj name];
-             item.tag = i++;
+    BOOL builtInSeparatorInserted = NO;
+    for (HBPreset *preset in self.presetsManager.root.children)
+    {
+        if (preset.isBuiltIn == NO && builtInSeparatorInserted == NO)
+        {
+            [self.presetsMenu addItem:[NSMenuItem separatorItem]];
+            builtInSeparatorInserted = YES;
+        }
+        [self.presetsMenu addItem:[self buildMenuItemWithPreset:preset]];
+    }
+}
 
-             // Set an action only to the actual presets,
-             // not on the folders.
-             if ([obj isLeaf])
-             {
-                 item.action = @selector(selectPresetFromMenu:);
-                 item.representedObject = obj;
-             }
-             // Make the default preset font bold.
-             if ([obj isEqualTo:self.presetsManager.defaultPreset])
-             {
-                 NSAttributedString *newTitle = [[NSAttributedString alloc] initWithString:[obj name]
-                                                                                attributes:@{NSFontAttributeName: [NSFont boldSystemFontOfSize:14]}];
-                 [item setAttributedTitle:newTitle];
-             }
-             // Add a separator line after the last builtIn preset
-             if ([obj isBuiltIn] == NO && builtInEnded == NO)
-             {
-                 [self.presetsMenu addItem:[NSMenuItem separatorItem]];
-                 builtInEnded = YES;
-             }
+- (NSMenuItem *)buildMenuItemWithPreset:(HBPreset *)preset
+{
+    NSMenuItem *item = [[NSMenuItem alloc] init];
+    item.title = preset.name;
+    item.toolTip = preset.presetDescription;
+    item.tag = 2;
 
-             item.indentationLevel = idx.length - 1;
+    if (preset.isLeaf)
+    {
+        item.action = @selector(selectPresetFromMenu:);
+        item.representedObject = preset;
 
-             [self.presetsMenu addItem:item];
-         }
-     }];
+        // Make the default preset font bold.
+        if ([preset isEqualTo:self.presetsManager.defaultPreset])
+        {
+            NSAttributedString *newTitle = [[NSAttributedString alloc] initWithString:preset.name
+                                                                           attributes:@{NSFontAttributeName: [NSFont boldSystemFontOfSize:14]}];
+            [item setAttributedTitle:newTitle];
+        }
+    }
+    else
+    {
+        NSMenu *menu = [[NSMenu alloc] init];
+        for (HBPreset *childPreset in preset.children)
+        {
+            [menu addItem:[self buildMenuItemWithPreset:childPreset]];
+        }
+
+        item.submenu = menu;
+    }
+
+    return item;
 }
 
 /**
@@ -393,18 +403,18 @@
 - (IBAction)openHomepage:(id)sender
 {
     [[NSWorkspace sharedWorkspace] openURL:[NSURL
-                                            URLWithString:@"http://handbrake.fr/"]];
+                                            URLWithString:@"https://handbrake.fr/"]];
 }
 
 - (IBAction)openForums:(id)sender
 {
     [[NSWorkspace sharedWorkspace] openURL:[NSURL
-                                            URLWithString:@"http://forum.handbrake.fr/"]];
+                                            URLWithString:@"https://forum.handbrake.fr/"]];
 }
 - (IBAction)openUserGuide:(id)sender
 {
     [[NSWorkspace sharedWorkspace] openURL:[NSURL
-                                            URLWithString:@"http://trac.handbrake.fr/wiki/HandBrakeGuide"]];
+                                            URLWithString:@"https://handbrake.fr/docs/en/1.0.0/"]];
 }
 
 @end

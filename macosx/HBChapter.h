@@ -12,9 +12,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (instancetype)initWithTitle:(NSString *)title index:(NSUInteger)idx duration:(uint64_t)duration NS_DESIGNATED_INITIALIZER;
 
-@property (nonatomic, readwrite) NSString *title;
+@property (nonatomic, readwrite, copy) NSString *title;
 @property (nonatomic, readonly) NSString *duration;
-@property (nonatomic, readwrite) NSUInteger index;
+@property (nonatomic, readonly) NSUInteger index;
 
 @property (nonatomic, readwrite, weak, nullable) NSUndoManager *undo;
 

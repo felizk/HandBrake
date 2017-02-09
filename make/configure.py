@@ -1,7 +1,8 @@
 ###############################################################################
 ##
-## This script is coded for minimum version of Python 2.4 .
-## Pyhthon3 is incompatible.
+## This script is coded for minimum version of Python 2.7 .
+##
+## Python3 is incompatible.
 ##
 ## Authors: konablend
 ##
@@ -9,16 +10,18 @@
 
 import fnmatch
 import glob
+import json
 import optparse
 import os
 import platform
+import random
 import re
+import string
 import subprocess
 import sys
 import time
 from datetime import datetime, timedelta
 
-from optparse import OptionGroup
 from optparse import OptionGroup
 from optparse import OptionParser
 from sys import stderr
@@ -81,13 +84,13 @@ class Configure( object ):
     def infof( self, format, *args ):
         line = format % args
         self._log_verbose.append( line )
-        if cfg.verbose >= Configure.OUT_INFO:
+        if self.verbose >= Configure.OUT_INFO:
             self._log_info.append( line )
             stdout.write( line )
     def verbosef( self, format, *args ):
         line = format % args
         self._log_verbose.append( line )
-        if cfg.verbose >= Configure.OUT_VERBOSE:
+        if self.verbose >= Configure.OUT_VERBOSE:
             stdout.write( line )
 
     ## doc is ready to be populated
@@ -96,15 +99,19 @@ class Configure( object ):
         self.build_final  = os.curdir
         self.src_final    = self._final_dir( self.build_dir, self.src_dir )
         self.prefix_final = self._final_dir( self.build_dir, self.prefix_dir )
+        if host.match( '*-*-darwin*' ):
+            self.xcode_prefix_final = self._final_dir( self.build_dir, self.xcode_prefix_dir )
 
-        cfg.infof( 'compute: makevar SRC/    = %s\n', self.src_final )
-        cfg.infof( 'compute: makevar BUILD/  = %s\n', self.build_final )
-        cfg.infof( 'compute: makevar PREFIX/ = %s\n', self.prefix_final )
+        self.infof( 'compute: makevar SRC/    = %s\n', self.src_final )
+        self.infof( 'compute: makevar BUILD/  = %s\n', self.build_final )
+        self.infof( 'compute: makevar PREFIX/ = %s\n', self.prefix_final )
+        if host.match( '*-*-darwin*' ):
+            self.infof( 'compute: makevar XCODE.prefix/ = %s\n', self.xcode_prefix_final )
 
     ## perform chdir and enable log recording
     def chdir( self ):
         if os.path.abspath( self.build_dir ) == os.path.abspath( self.src_dir ):
-            cfg.errln( 'build (scratch) directory must not be the same as top-level source root!' )
+            self.errln( 'build (scratch) directory must not be the same as top-level source root!' )
 
         if self.build_dir != os.curdir:
             if os.path.exists( self.build_dir ):
@@ -127,7 +134,7 @@ class Configure( object ):
         dir = os.path.dirname( args[0] )
         if len(args) > 1 and args[1].find('w') != -1:
             self.mkdirs( dir )
-        m = re.match( '^(.*)\.tmp$', args[0] )
+        m = re.match( '^(.*)\.tmp\..{8}$', args[0] )
         if m:
             self.infof( 'write: %s\n', m.group(1) )
         else:
@@ -136,18 +143,18 @@ class Configure( object ):
         try:
             return open( *args )
         except Exception, x:
-            cfg.errln( 'open failure: %s', x )
+            self.errln( 'open failure: %s', x )
 
     def record_log( self ):
         if not self._record:
             return
         self._record = False
         self.verbose = Configure.OUT_QUIET
-        file = cfg.open( 'log/config.info.txt', 'w' )
+        file = self.open( 'log/config.info.txt', 'w' )
         for line in self._log_info:
             file.write( line )
         file.close()
-        file = cfg.open( 'log/config.verbose.txt', 'w' )
+        file = self.open( 'log/config.verbose.txt', 'w' )
         for line in self._log_verbose:
             file.write( line )
         file.close()
@@ -195,6 +202,8 @@ class Configure( object ):
         self.src_dir    = os.path.normpath( options.src )
         self.build_dir  = os.path.normpath( options.build )
         self.prefix_dir = os.path.normpath( options.prefix )
+        if host.match( '*-*-darwin*' ):
+            self.xcode_prefix_dir = os.path.normpath( options.xcode_prefix )
         if options.sysroot != None:
                 self.sysroot_dir = os.path.normpath( options.sysroot )
         else:
@@ -208,6 +217,10 @@ class Configure( object ):
         ## special case if src == build: add build subdir
         if os.path.abspath( self.src_dir ) == os.path.abspath( self.build_dir ):
             self.build_dir = os.path.join( self.build_dir, 'build' )
+
+    ## generate a temporary filename - not worried about race conditions
+    def mktmpname( self, filename ):
+        return filename + '.tmp.' + ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(8))
 
 ###############################################################################
 ##
@@ -617,8 +630,8 @@ class CoreProbe( Action ):
         ## clamp
         if self.count < 1:
             self.count = 1
-        elif self.count > 32:
-            self.count = 32
+        elif self.count > 64:
+            self.count = 64
 
         if options.launch:
             if options.launch_jobs == 0:
@@ -700,7 +713,7 @@ class RepoProbe( ShellProbe ):
         self.rev       = 0
         self.hash      = 'deadbeaf'
         self.shorthash = 'deadbea'
-        self.date      = datetime(1, 1, 1)
+        self.date      = None
         self.official  = 0
         self.type      = 'developer'
 
@@ -744,11 +757,10 @@ class RepoProbe( ShellProbe ):
                 self.shorthash = value[:7]
 
         # type-classification via repository URL
-        official_url = 'https://github.com/HandBrake/HandBrake.git' # HTTPS
-        if self.url == 'git@github.com:HandBrake/HandBrake.git':    # SSH
-            self.url = official_url
+        if self.url == project.url_repo_ssh:
+            self.url = project.url_repo  # official repo, SSH to HTTPS
 
-        if self.url == official_url:
+        if self.url == project.url_repo:
             self.official = 1
             if not options.snapshot and self.hash == self.tag_hash:
                 self.type = 'release'
@@ -796,6 +808,8 @@ class Project( Action ):
         self.acro_lower    = 'hb'
         self.acro_upper    = 'HB'
         self.url_website   = 'https://handbrake.fr'
+        self.url_repo      = 'https://github.com/HandBrake/HandBrake.git'
+        self.url_repo_ssh  = 'git@github.com:HandBrake/HandBrake.git'
         self.url_community = 'https://forum.handbrake.fr'
         self.url_irc       = 'irc://irc.freenode.net/handbrake'
 
@@ -816,9 +830,12 @@ class Project( Action ):
         else:
             url_arch = ''
 
-        suffix = ''
+        if repo.date is None:
+            cfg.errln( '%s is missing version information it needs to build properly.\nClone the official git repository at %s\nor download an official source archive from %s\n', self.name, self.url_repo, self.url_website )
+            sys.exit( 1 )
+
         if repo.tag != '':
-            m = re.match( '^([0-9]+)\.([0-9]+)\.([0-9]+)-?(.*)?$', repo.tag )
+            m = re.match( '^([0-9]+)\.([0-9]+)\.([0-9]+)-?(.+)?$', repo.tag )
             if not m:
                 cfg.errln( 'Invalid repo tag format %s\n', repo.tag )
                 sys.exit( 1 )
@@ -826,7 +843,8 @@ class Project( Action ):
             self.vmajor = int(vmajor)
             self.vminor = int(vminor)
             self.vpoint = int(vpoint)
-            self.suffix = suffix
+            if suffix:
+                self.suffix = suffix
 
         if repo.type != 'release' or options.snapshot:
             self.version = repo.date.strftime("%Y%m%d%H%M%S")
@@ -841,10 +859,10 @@ class Project( Action ):
 
             url_ctype = '_unstable'
             url_ntype = 'unstable'
-            self.build = time.strftime('%Y%m%d') + '01'
+            self.build = time.strftime('%Y%m%d', now) + '01'
             self.title = '%s %s (%s)' % (self.name,self.version,self.build)
         else:
-            m = re.match('^([a-zA-Z]+)\.([0-9]+)$', suffix)
+            m = re.match('^([a-zA-Z]+)\.([0-9]+)$', self.suffix)
             if not m:
                 # Regular release
                 self.version = '%d.%d.%d' % (self.vmajor,self.vminor,self.vpoint)
@@ -860,7 +878,7 @@ class Project( Action ):
                 url_ctype = '_unstable'
                 url_ntype = 'unstable'
 
-            self.build = time.strftime('%Y%m%d') + '00'
+            self.build = time.strftime('%Y%m%d', now) + '00'
             self.title = '%s %s (%s)' % (self.name,self.version,self.build)
 
         self.url_appcast = 'https://handbrake.fr/appcast%s%s.xml' % (url_ctype,url_arch)
@@ -1152,7 +1170,7 @@ class ConfigDocument:
         else:
             raise ValueError, 'unknown file type: ' + type
 
-        ftmp  = fname + '.tmp'
+        ftmp = cfg.mktmpname(fname)
         try:
             try:
                 file = cfg.open( ftmp, 'w' )
@@ -1173,6 +1191,41 @@ class ConfigDocument:
             os.rename( ftmp, fname )
         except Exception, x:
             cfg.errln( 'failed writing to %s\n%s', fname, x )
+
+###############################################################################
+
+def encodeDistfileConfig():
+    fname = 'distfile.cfg'
+    ftmp = cfg.mktmpname(fname)
+    data = {
+        'disable-fetch':  options.disable_df_fetch,
+        'disable-verify': options.disable_df_verify,
+        'jobs':           options.df_jobs,
+        'verbosity':      options.df_verbosity,
+        'accept-url':     options.df_accept_url,
+        'deny-url':       options.df_deny_url,
+    }
+    try:
+        try:
+            file = cfg.open( ftmp, 'w' )
+            json.dump(data, file)
+            file.write('\n')
+        finally:
+            try:
+                file.close()
+            except:
+                pass
+    except Exception, x:
+        try:
+            os.remove( ftmp )
+        except Exception, x:
+            pass
+        cfg.errln( 'failed writing to %s\n%s', ftmp, x )
+
+    try:
+        os.rename( ftmp, fname )
+    except Exception, x:
+        cfg.errln( 'failed writing to %s\n%s', fname, x )
 
 ###############################################################################
 ##
@@ -1212,8 +1265,20 @@ def createCLI():
 
     ## add hidden options
     cli.add_option( '--xcode-driver', default='bootstrap', action='store', help=optparse.SUPPRESS_HELP )
+
+    ## add general options
     cli.add_option( '--force', default=False, action='store_true', help='overwrite existing build config' )
     cli.add_option( '--verbose', default=False, action='store_true', help='increase verbosity' )
+
+    ## add distfile options
+    grp = OptionGroup( cli, 'Distfile Options' )
+    grp.add_option( '--disable-df-fetch', default=False, action='store_true', help='disable distfile downloads' )
+    grp.add_option( '--disable-df-verify', default=False, action='store_true', help='disable distfile data verification' )
+    grp.add_option( '--df-jobs', default=1, action='store', metavar='N', type='int', help='allow N distfile downloads at once' )
+    grp.add_option( '--df-verbose', default=1, action='count', dest='df_verbosity', help='increase distfile tools verbosity' )
+    grp.add_option( '--df-accept-url', default=[], action='append', metavar='SPEC', help='accept URLs matching regex pattern' )
+    grp.add_option( '--df-deny-url', default=[], action='append', metavar='SPEC', help='deny URLs matching regex pattern' )
+    cli.add_option_group( grp )
 
     ## add install options
     grp = OptionGroup( cli, 'Directory Locations' )
@@ -1245,15 +1310,13 @@ def createCLI():
     h = IfHost( 'enable use of Intel Quick Sync Video hardware acceleration', '*-*-*', none=optparse.SUPPRESS_HELP ).value
     grp.add_option( '--enable-qsv', default=False, action='store_true', help=h )
 
-    h = IfHost( 'enable HWD features', '*-*-*', none=optparse.SUPPRESS_HELP ).value
-    grp.add_option( '--enable-hwd', default=False, action='store_true', help=h )
 
     h = IfHost( 'enable use of x265 encoding', '*-*-*', none=optparse.SUPPRESS_HELP ).value
     grp.add_option( '--enable-x265', default=True, action='store_true', help=h )
     grp.add_option( '--disable-x265', dest="enable_x265", action='store_false' )
 
     h = IfHost( 'enable use of fdk-aac encoder', '*-*-*', none=optparse.SUPPRESS_HELP ).value
-    grp.add_option( '--enable-fdk-aac', dest="enable_fdk_aac", default=not host.match( '*-*-darwin*' ), action='store_true', help=h )
+    grp.add_option( '--enable-fdk-aac', dest="enable_fdk_aac", default=False, action='store_true', help=h )
     grp.add_option( '--disable-fdk-aac', dest="enable_fdk_aac", action='store_false' )
 
     h = IfHost( 'enable use of libav aac encoder', '*-*-*', none=optparse.SUPPRESS_HELP ).value
@@ -1294,13 +1357,18 @@ def createCLI():
     h = IfHost( 'Build and use local pkg-config', '*-*-darwin*', none=optparse.SUPPRESS_HELP ).value
     grp.add_option( '--enable-local-pkgconfig', default=False, action='store_true', help=h )
 
+    h = IfHost( 'Build extra contribs for flatpak packaging', '*-*-linux*', none=optparse.SUPPRESS_HELP ).value
+    grp.add_option( '--flatpak', default=False, action='store_true', help=h )
     cli.add_option_group( grp )
+
 
     ## add Xcode options
     if host.match( '*-*-darwin*' ):
         grp = OptionGroup( cli, 'Xcode Options' )
         grp.add_option( '--disable-xcode', default=False, action='store_true',
             help='disable Xcode' )
+        grp.add_option( '--xcode-prefix', default=cfg.xcode_prefix_dir, action='store', metavar='DIR',
+            help='specify install dir for Xcode products [%s]' % (cfg.xcode_prefix_dir) )
         grp.add_option( '--xcode-symroot', default='xroot', action='store', metavar='DIR',
             help='specify root of the directory hierarchy that contains product files and intermediate build files' )
         xcconfigMode.cli_add_option( grp, '--xcode-config' )
@@ -1429,6 +1497,8 @@ try:
         if arg == '--verbose':
             verbose = Configure.OUT_VERBOSE
 
+    now = time.gmtime(int(os.environ.get('SOURCE_DATE_EPOCH', time.time())))
+
     ## create main objects; actions/probes run() is delayed.
     ## if any actions must be run earlier (eg: for configure --help purposes)
     ## then run() must be invoked earlier. subequent run() invocations
@@ -1436,7 +1506,9 @@ try:
     cfg   = Configure( verbose )
     host  = HostTupleProbe(); host.run()
 
-    cfg.prefix_dir = ForHost( '/usr/local', ['/Applications','*-*-darwin*'] ).value
+    cfg.prefix_dir = '/usr/local'
+    if host.match( '*-*-darwin*' ):
+        cfg.xcode_prefix_dir = '/Applications'
 
     build = BuildAction()
     arch  = ArchAction(); arch.run()
@@ -1450,7 +1522,6 @@ try:
     class Tools:
         ar    = ToolProbe( 'AR.exe',    'ar' )
         cp    = ToolProbe( 'CP.exe',    'cp' )
-        curl  = ToolProbe( 'CURL.exe',  'curl', abort=False )
         gcc   = ToolProbe( 'GCC.gcc',   'gcc', IfHost( 'gcc-4', '*-*-cygwin*' ))
 
         if host.match( '*-*-darwin*' ):
@@ -1465,7 +1536,6 @@ try:
         ranlib   = ToolProbe( 'RANLIB.exe',   'ranlib' )
         strip    = ToolProbe( 'STRIP.exe',    'strip' )
         tar      = ToolProbe( 'TAR.exe',      'gtar', 'tar' )
-        wget     = ToolProbe( 'WGET.exe',     'wget', abort=False )
         yasm     = ToolProbe( 'YASM.exe',     'yasm', abort=False, minversion=[1,2,0] )
         autoconf = ToolProbe( 'AUTOCONF.exe', 'autoconf', abort=False )
         automake = ToolProbe( 'AUTOMAKE.exe', 'automake', abort=False )
@@ -1475,8 +1545,6 @@ try:
 
         xcodebuild = ToolProbe( 'XCODEBUILD.exe', 'xcodebuild', abort=False )
         lipo       = ToolProbe( 'LIPO.exe',       'lipo', abort=False )
-
-        fetch = SelectTool( 'FETCH.select', 'fetch', ['wget',wget], ['curl',curl] )
 
     ## run tool probes
     for tool in ToolProbe.tools:
@@ -1644,7 +1712,7 @@ int main()
     int     rv;
     regex_t exp;
 
-    rv = regcomp(&exp, "^[0-9]+$";", REG_EXTENDED);
+    rv = regcomp(&exp, "^[0-9]+$", REG_EXTENDED);
     if (rv != 0) {
         return 1;
     }
@@ -1678,6 +1746,23 @@ int main ()
         strtok_r = LDProbe( 'static strtok_r', '%s -static' % Tools.gcc.pathname, '', strtok_r_test )
         strtok_r.run()
 
+    strerror_r_test = """
+#include <string.h>
+
+int main()
+{
+    /* some implementations fail if buf is less than 80 characters
+       so size it appropriately */
+    char errstr[128];
+    /* some implementations fail if err == 0 */
+    strerror_r(1, errstr, 127);
+    return 0;
+}
+"""
+
+    strerror_r = LDProbe( 'strerror_r', '%s' % Tools.gcc.pathname, '', strerror_r_test )
+    strerror_r.run()
+
     ## cfg hook before doc prep
     cfg.doc_ready()
 
@@ -1690,7 +1775,7 @@ int main ()
     args = []
     for arg in Option.conf_args:
         args.append( arg[1] )
-    doc.add( 'CONF.args', ' '.join( args ))
+    doc.add( 'CONF.args', ' '.join(args).replace('$','$$') )
 
     doc.addBlank()
     doc.add( 'HB.title',       project.title )
@@ -1756,7 +1841,7 @@ int main ()
     else:
         doc.add( 'BUILD.cross.prefix', '' )
 
-    doc.add( 'BUILD.date',   time.strftime('%c') )
+    doc.add( 'BUILD.date',   time.strftime('%c', now) ),
     doc.add( 'BUILD.arch',   arch.mode.mode )
 
     doc.addBlank()
@@ -1773,6 +1858,7 @@ int main ()
     doc.add( 'FEATURE.local_cmake', int( options.enable_local_cmake ))
     doc.add( 'FEATURE.local_pkgconfig', int( options.enable_local_pkgconfig ))
     doc.add( 'FEATURE.asm',        'disabled' )
+    doc.add( 'FEATURE.flatpak',    int( options.flatpak ))
     doc.add( 'FEATURE.gtk',        int( not options.disable_gtk ))
     doc.add( 'FEATURE.gtk.update.checks', int( not options.disable_gtk_update_checks ))
     doc.add( 'FEATURE.gtk.mingw',  int( options.enable_gtk_mingw ))
@@ -1780,12 +1866,13 @@ int main ()
     doc.add( 'FEATURE.fdk_aac',    int( options.enable_fdk_aac ))
     doc.add( 'FEATURE.libav_aac',  int( options.enable_libav_aac ))
     doc.add( 'FEATURE.qsv',        int( options.enable_qsv ))
-    doc.add( 'FEATURE.hwd',        int( options.enable_hwd ))
     doc.add( 'FEATURE.xcode',      int( not (Tools.xcodebuild.fail or options.disable_xcode or options.cross) ))
     doc.add( 'FEATURE.x265',       int( options.enable_x265 ))
 
     if not Tools.xcodebuild.fail and not options.disable_xcode:
         doc.addBlank()
+        doc.add( 'XCODE.prefix',  cfg.xcode_prefix_final )
+        doc.add( 'XCODE.prefix/', cfg.xcode_prefix_final + os.sep )
         doc.add( 'XCODE.driver', options.xcode_driver )
         if os.path.isabs(options.xcode_symroot):
             doc.add( 'XCODE.symroot', options.xcode_symroot )
@@ -1811,6 +1898,10 @@ int main ()
             doc.add( 'HAS.regex', 1 )
         if strtok_r.fail:
             doc.add( 'COMPAT.strtok_r', 1 )
+    else:
+        doc.addBlank()
+        if not strerror_r.fail:
+            doc.add( 'HAS.strerror_r', 1 )
 
     doc.addMake( '' )
     doc.addMake( '## define debug mode and optimize before other includes' )
@@ -1890,6 +1981,8 @@ int main ()
     ## perform
     doc.write( 'make' )
     doc.write( 'm4' )
+    encodeDistfileConfig()
+
     if options.launch:
         Launcher( targets )
 

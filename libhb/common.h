@@ -1,6 +1,6 @@
 /* common.h
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -10,6 +10,8 @@
 #ifndef HB_COMMON_H
 #define HB_COMMON_H
 
+#include "hbtypes.h"
+#include "hb_dict.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,41 +82,6 @@
 #define HB_MAX_WIDTH    20480
 #define HB_MAX_HEIGHT   20480
 
-typedef struct hb_handle_s hb_handle_t;
-typedef struct hb_hwd_s hb_hwd_t;
-typedef struct hb_list_s hb_list_t;
-typedef struct hb_buffer_list_s hb_buffer_list_t;
-typedef struct hb_rate_s hb_rate_t;
-typedef struct hb_dither_s hb_dither_t;
-typedef struct hb_mixdown_s hb_mixdown_t;
-typedef struct hb_encoder_s hb_encoder_t;
-typedef struct hb_container_s hb_container_t;
-typedef struct hb_rational_s hb_rational_t;
-typedef struct hb_geometry_s hb_geometry_t;
-typedef struct hb_geometry_settings_s hb_geometry_settings_t;
-typedef struct hb_image_s hb_image_t;
-typedef struct hb_job_s  hb_job_t;
-typedef struct hb_title_set_s hb_title_set_t;
-typedef struct hb_title_s hb_title_t;
-typedef struct hb_chapter_s hb_chapter_t;
-typedef struct hb_audio_s hb_audio_t;
-typedef struct hb_audio_config_s hb_audio_config_t;
-typedef struct hb_subtitle_s hb_subtitle_t;
-typedef struct hb_subtitle_config_s hb_subtitle_config_t;
-typedef struct hb_attachment_s hb_attachment_t;
-typedef struct hb_metadata_s hb_metadata_t;
-typedef struct hb_coverart_s hb_coverart_t;
-typedef struct hb_state_s hb_state_t;
-typedef union  hb_esconfig_u     hb_esconfig_t;
-typedef struct hb_work_private_s hb_work_private_t;
-typedef struct hb_work_object_s  hb_work_object_t;
-typedef struct hb_filter_private_s hb_filter_private_t;
-typedef struct hb_filter_object_s  hb_filter_object_t;
-typedef struct hb_buffer_s hb_buffer_t;
-typedef struct hb_buffer_settings_s hb_buffer_settings_t;
-typedef struct hb_image_format_s hb_image_format_t;
-typedef struct hb_fifo_s hb_fifo_t;
-typedef struct hb_lock_s hb_lock_t;
 typedef enum
 {
      HB_ERROR_NONE         = 0,
@@ -136,7 +103,7 @@ typedef enum
 #include "libavutil/channel_layout.h"
 
 #ifdef USE_QSV
-#include "libavcodec/qsv.h"
+#include "qsv_libav.h"
 #endif
 
 struct hb_buffer_list_s
@@ -153,6 +120,7 @@ hb_buffer_t* hb_buffer_list_head(hb_buffer_list_t *list);
 hb_buffer_t* hb_buffer_list_rem_head(hb_buffer_list_t *list);
 hb_buffer_t* hb_buffer_list_tail(hb_buffer_list_t *list);
 hb_buffer_t* hb_buffer_list_rem_tail(hb_buffer_list_t *list);
+hb_buffer_t* hb_buffer_list_rem(hb_buffer_list_t *list, hb_buffer_t * b);
 hb_buffer_t* hb_buffer_list_clear(hb_buffer_list_t *list);
 hb_buffer_t* hb_buffer_list_set(hb_buffer_list_t *list, hb_buffer_t *buf);
 void hb_buffer_list_close(hb_buffer_list_t *list);
@@ -373,10 +341,16 @@ const hb_rate_t* hb_video_framerate_get_next(const hb_rate_t *last);
 int              hb_video_framerate_get_close(hb_rational_t *framerate,
                                               double thresh);
 
-int              hb_audio_samplerate_get_best(uint32_t codec, int samplerate, int *sr_shift);
+int              hb_audio_samplerate_is_supported(int samplerate,
+                                                  uint32_t codec);
+int              hb_audio_samplerate_find_closest(int samplerate,
+                                                  uint32_t codec);
+int              hb_audio_samplerate_get_sr_shift(int samplerate);
 int              hb_audio_samplerate_get_from_name(const char *name);
 const char*      hb_audio_samplerate_get_name(int samplerate);
 const hb_rate_t* hb_audio_samplerate_get_next(const hb_rate_t *last);
+const hb_rate_t* hb_audio_samplerate_get_next_for_codec(const hb_rate_t *last,
+                                                        uint32_t codec);
 
 int              hb_audio_bitrate_get_best(uint32_t codec, int bitrate, int samplerate, int mixdown);
 int              hb_audio_bitrate_get_default(uint32_t codec, int samplerate, int mixdown);
@@ -478,7 +452,8 @@ typedef enum
     HB_ANAMORPHIC_NONE,
     HB_ANAMORPHIC_STRICT,
     HB_ANAMORPHIC_LOOSE,
-    HB_ANAMORPHIC_CUSTOM
+    HB_ANAMORPHIC_CUSTOM,
+    HB_ANAMORPHIC_AUTO
 } hb_anamorphic_mode_t;
 
 /******************************************************************************
@@ -514,7 +489,7 @@ struct hb_job_s
 
     /* Video settings:
          vcodec:            output codec
-         vquality:          output quality (if < 0.0, bitrate is used instead)
+         vquality:          output quality (if invalid, bitrate is used instead)
          vbitrate:          output bitrate (Kbps)
          vrate:             output framerate
          cfr:               0 (vfr), 1 (cfr), 2 (pfr) [see render.c]
@@ -526,6 +501,7 @@ struct hb_job_s
 #define HB_VCODEC_FFMPEG_MPEG4 0x0000010
 #define HB_VCODEC_FFMPEG_MPEG2 0x0000020
 #define HB_VCODEC_FFMPEG_VP8   0x0000040
+#define HB_VCODEC_FFMPEG_VP9   0x0000080
 #define HB_VCODEC_FFMPEG_MASK  0x00000F0
 #define HB_VCODEC_QSV_H264     0x0000100
 #define HB_VCODEC_QSV_H265     0x0000200
@@ -542,6 +518,9 @@ struct hb_job_s
 #define HB_VCODEC_X265_16BIT   0x0008000
 #define HB_VCODEC_X265_MASK    0x000F000
 #define HB_VCODEC_H265_MASK    (HB_VCODEC_X265_MASK|HB_VCODEC_QSV_H265)
+
+/* define an invalid CQ value compatible with all CQ-capable codecs */
+#define HB_INVALID_VIDEO_QUALITY (-1000.)
 
     int             vcodec;
     double          vquality;
@@ -566,21 +545,29 @@ struct hb_job_s
     int             color_prim;
     int             color_transfer;
     int             color_matrix;
-// see https://developer.apple.com/quicktime/icefloe/dispatch019.html#colr
-#define HB_COLR_PRI_BT709     1
-#define HB_COLR_PRI_UNDEF     2
-#define HB_COLR_PRI_EBUTECH   5 // use for bt470bg
-#define HB_COLR_PRI_SMPTEC    6 // smpte170m; also use for bt470m and smpte240m
-// 0, 3-4, 7-65535: reserved
-#define HB_COLR_TRA_BT709     1 // also use for bt470m, bt470bg and smpte170m
-#define HB_COLR_TRA_UNDEF     2
-#define HB_COLR_TRA_SMPTE240M 7
-// 0, 3-6, 8-65535: reserved
-#define HB_COLR_MAT_BT709     1
-#define HB_COLR_MAT_UNDEF     2
-#define HB_COLR_MAT_SMPTE170M 6 // also use for fcc and bt470bg
-#define HB_COLR_MAT_SMPTE240M 7
-// 0, 3-5, 8-65535: reserved
+// see https://developer.apple.com/library/content/technotes/tn2162/_index.html
+//     https://developer.apple.com/library/content/documentation/QuickTime/QTFF/QTFFChap3/qtff3.html#//apple_ref/doc/uid/TP40000939-CH205-125526
+//     libav pixfmt.h
+#define HB_COLR_PRI_BT709        1
+#define HB_COLR_PRI_UNDEF        2
+#define HB_COLR_PRI_EBUTECH      5 // use for bt470bg
+#define HB_COLR_PRI_SMPTEC       6 // smpte170m; also use for bt470m and smpte240m
+#define HB_COLR_PRI_BT2020       9
+// 0, 3-4, 7-8, 10-65535: reserved/not implemented
+#define HB_COLR_TRA_BT709        1 // also use for bt470m, bt470bg, smpte170m, bt2020_10 and bt2020_12
+#define HB_COLR_TRA_UNDEF        2
+#define HB_COLR_TRA_SMPTE240M    7
+#define HB_COLR_TRA_BT2020_10    14
+#define HB_COLR_TRA_BT2020_12    15
+#define HB_COLR_TRA_SMPTEST2084  16
+// 0, 3-6, 8-15, 17-65535: reserved/not implemented
+#define HB_COLR_MAT_BT709        1
+#define HB_COLR_MAT_UNDEF        2
+#define HB_COLR_MAT_SMPTE170M    6 // also use for fcc and bt470bg
+#define HB_COLR_MAT_SMPTE240M    7
+#define HB_COLR_MAT_BT2020_NCL   9
+#define HB_COLR_MAT_BT2020_CL    10
+// 0, 3-5, 8, 11-65535: reserved/not implemented
 
     hb_list_t     * list_chapter;
 
@@ -637,7 +624,6 @@ struct hb_job_s
                                         //  initially (for frame accurate positioning
                                         //  to non-I frames).
     int use_opencl;
-    int use_hwd;
     PRIVATE int use_decomb;
     PRIVATE int use_detelecine;
 
@@ -647,7 +633,7 @@ struct hb_job_s
         int decode;
         int async_depth;
 #ifdef USE_QSV
-        av_qsv_context *ctx;
+        hb_qsv_context *ctx;
 #endif
         // shared encoding parameters
         // initialized by the QSV encoder, then used upstream (e.g. by filters)
@@ -688,7 +674,7 @@ struct hb_job_s
 /* Audio starts here */
 /* Audio Codecs: Update win/CS/HandBrake.Interop/HandBrakeInterop/HbLib/NativeConstants.cs when changing these consts */
 #define HB_ACODEC_INVALID   0x00000000
-#define HB_ACODEC_MASK      0x03FFFF00
+#define HB_ACODEC_MASK      0x07FFFF00
 #define HB_ACODEC_LAME      0x00000200
 #define HB_ACODEC_VORBIS    0x00000400
 #define HB_ACODEC_AC3       0x00000800
@@ -706,7 +692,8 @@ struct hb_job_s
 #define HB_ACODEC_FDK_HAAC  0x00800000
 #define HB_ACODEC_FFEAC3    0x01000000
 #define HB_ACODEC_FFTRUEHD  0x02000000
-#define HB_ACODEC_FF_MASK   0x03FF2800
+#define HB_ACODEC_OPUS      0x04000000
+#define HB_ACODEC_FF_MASK   0x07FF2800
 #define HB_ACODEC_PASS_FLAG 0x40000000
 #define HB_ACODEC_PASS_MASK   (HB_ACODEC_AC3 | HB_ACODEC_DCA | HB_ACODEC_DCA_HD | HB_ACODEC_FFAAC | HB_ACODEC_FFEAC3 | HB_ACODEC_FFFLAC | HB_ACODEC_MP3 | HB_ACODEC_FFTRUEHD)
 #define HB_ACODEC_AUTO_PASS   (HB_ACODEC_PASS_FLAG | HB_ACODEC_PASS_MASK)
@@ -913,7 +900,6 @@ struct hb_subtitle_s
 
     hb_fifo_t * fifo_in;  /* SPU ES */
     hb_fifo_t * fifo_raw; /* Decoded SPU */
-    hb_fifo_t * fifo_sync;/* Synced */
     hb_fifo_t * fifo_out; /* Correct Timestamps, ready to be muxed */
     hb_mux_data_t * mux_data;
 #endif
@@ -1013,7 +999,6 @@ struct hb_title_s
     int           video_decode_support;
 #define HB_DECODE_SUPPORT_SW    0x01 // software (libavcodec or mpeg2dec)
 #define HB_DECODE_SUPPORT_QSV   0x02 // Intel Quick Sync Video
-#define HB_DECODE_SUPPORT_DXVA2 0x04 // Microsoft DXVA2
 
     hb_metadata_t * metadata;
 
@@ -1157,7 +1142,6 @@ struct hb_work_object_s
     hb_work_private_t * private_data;
 
     hb_thread_t       * thread;
-    int                 yield;
     volatile int      * done;
     volatile int      * die;
     int                 status;
@@ -1172,6 +1156,7 @@ struct hb_work_object_s
 
 extern hb_work_object_t hb_sync_video;
 extern hb_work_object_t hb_sync_audio;
+extern hb_work_object_t hb_sync_subtitle;
 extern hb_work_object_t hb_decvobsub;
 extern hb_work_object_t hb_encvobsub;
 extern hb_work_object_t hb_deccc608;
@@ -1203,53 +1188,53 @@ extern hb_work_object_t hb_reader;
 
 typedef struct hb_filter_init_s
 {
-    hb_job_t    * job;
-    int           pix_fmt;
-    hb_geometry_t geometry;
-    int           crop[4];
-    hb_rational_t vrate;
-    int           cfr;
-    int           grayscale;
+    hb_job_t      * job;
+    int             pix_fmt;
+    hb_geometry_t   geometry;
+    int             crop[4];
+    hb_rational_t   vrate;
+    int             cfr;
+    int             grayscale;
 } hb_filter_init_t;
 
 typedef struct hb_filter_info_s
 {
-    char               human_readable_desc[128];
+    char             * human_readable_desc;
     hb_filter_init_t   out;
 } hb_filter_info_t;
 
 struct hb_filter_object_s
 {
-    int                     id;
-    int                     enforce_order;
-    char                  * name;
-    char                  * settings;
+    int                   id;
+    int                   enforce_order;
+    char                * name;
+    hb_dict_t           * settings;
 
 #ifdef __LIBHB__
-    int         (* init)      ( hb_filter_object_t *, hb_filter_init_t * );
-    int         (* post_init) ( hb_filter_object_t *, hb_job_t * );
+    int                (* init)     ( hb_filter_object_t *, hb_filter_init_t * );
+    int                (* post_init)( hb_filter_object_t *, hb_job_t * );
+    int                (* work)     ( hb_filter_object_t *,
+                                      hb_buffer_t **, hb_buffer_t ** );
+    void               (* close)    ( hb_filter_object_t * );
+    hb_filter_info_t * (* info)     ( hb_filter_object_t * );
 
-    int         (* work)      ( hb_filter_object_t *,
-                                hb_buffer_t **, hb_buffer_t ** );
+    const char          * settings_template;
 
-    void        (* close)     ( hb_filter_object_t * );
-    int         (* info)      ( hb_filter_object_t *, hb_filter_info_t * );
+    hb_fifo_t           * fifo_in;
+    hb_fifo_t           * fifo_out;
 
-    hb_fifo_t   * fifo_in;
-    hb_fifo_t   * fifo_out;
-
-    hb_subtitle_t     * subtitle;
+    hb_subtitle_t       * subtitle;
 
     hb_filter_private_t * private_data;
 
-    hb_thread_t       * thread;
-    volatile int      * done;
-    int                 status;
+    hb_thread_t         * thread;
+    volatile int        * done;
+    int                   status;
 
     // Filters can drop frames and thus chapter marks
     // These are used to bridge the chapter to the next buffer
-    int                 chapter_val;
-    int64_t             chapter_time;
+    int                   chapter_val;
+    int64_t               chapter_time;
 #endif
 };
 
@@ -1263,6 +1248,7 @@ enum
 
     // First, filters that may change the framerate (drop or dup frames)
     HB_FILTER_DETELECINE,
+    HB_FILTER_COMB_DETECT,
     HB_FILTER_DECOMB,
     HB_FILTER_DEINTERLACE,
     HB_FILTER_VFR,
@@ -1273,11 +1259,13 @@ enum
     HB_FILTER_NLMEANS,
     HB_FILTER_RENDER_SUB,
     HB_FILTER_CROP_SCALE,
+    HB_FILTER_ROTATE,
+    HB_FILTER_GRAYSCALE,
+    HB_FILTER_PAD,
 
     // Finally filters that don't care what order they are in,
     // except that they must be after the above filters
-    HB_FILTER_ROTATE,
-    HB_FILTER_GRAYSCALE,
+    HB_FILTER_AVFILTER,
 
     // for QSV - important to have as a last one
     HB_FILTER_QSV_POST,
@@ -1286,10 +1274,19 @@ enum
     HB_FILTER_LAST = HB_FILTER_QSV
 };
 
+hb_filter_object_t * hb_filter_get( int filter_id );
 hb_filter_object_t * hb_filter_init( int filter_id );
 hb_filter_object_t * hb_filter_copy( hb_filter_object_t * filter );
-hb_list_t *hb_filter_list_copy(const hb_list_t *src);
-void hb_filter_close( hb_filter_object_t ** );
+hb_list_t          * hb_filter_list_copy(const hb_list_t *src);
+hb_filter_object_t * hb_filter_find(const hb_list_t *list, int filter_id);
+void                 hb_filter_close( hb_filter_object_t ** );
+void                 hb_filter_info_close( hb_filter_info_t ** );
+hb_dict_t          * hb_parse_filter_settings(const char * settings);
+char               * hb_parse_filter_settings_json(const char * settings_str);
+char               * hb_filter_settings_string(int filter_id,
+                                               hb_value_t * value);
+char               * hb_filter_settings_string_json(int filter_id,
+                                                    const char * json);
 
 typedef void hb_error_handler_t( const char *errmsg );
 
@@ -1298,6 +1295,13 @@ extern void hb_register_error_handler( hb_error_handler_t * handler );
 char * hb_strdup_vaprintf( const char * fmt, va_list args );
 char * hb_strdup_printf(const char *fmt, ...) HB_WPRINTF(1, 2);
 char * hb_strncat_dup( const char * s1, const char * s2, size_t n );
+
+// free array of strings
+void    hb_str_vfree( char ** strv );
+// count number of strings in array of strings
+int     hb_str_vlen(char ** strv);
+// split string into array of strings
+char ** hb_str_vsplit( const char * str, char delem );
 
 int hb_yuv2rgb(int yuv);
 int hb_rgb2yuv(int rgb);
@@ -1317,5 +1321,13 @@ const char * hb_x264_encopt_name( const char * name );
 // x265 option name/synonym helper
 const char * hb_x265_encopt_name( const char * name );
 #endif
+
+#define HB_NEG_FLOAT_REG "(([-])?(([0-9]+([.,][0-9]+)?)|([.,][0-9]+))"
+#define HB_FLOAT_REG     "(([0-9]+([.,][0-9]+)?)|([.,][0-9]+))"
+#define HB_NEG_INT_REG   "(([-]?[0-9]+)"
+#define HB_INT_REG       "([0-9]+)"
+#define HB_RATIONAL_REG  "([0-9]+/[0-9]+)"
+#define HB_BOOL_REG      "(yes|no|true|false|[01])"
+#define HB_ALL_REG       "(.*)"
 
 #endif

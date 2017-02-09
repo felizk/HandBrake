@@ -1,7 +1,7 @@
 /* -*- Mode: C; indent-tabs-mode: t; c-basic-offset: 4; tab-width: 4 -*- */
 /*
  * audiohandler.h
- * Copyright (C) John Stebbins 2008-2016 <stebbins@stebbins>
+ * Copyright (C) John Stebbins 2008-2017 <stebbins@stebbins>
  *
  * audiohandler.h is free software.
  *
@@ -30,7 +30,7 @@
 
 GhbValue *ghb_get_audio_settings(GhbValue *settings);
 GhbValue *ghb_get_audio_list(GhbValue *settings);
-void ghb_sanitize_audio_tracks(signal_user_data_t *ud);
+void ghb_sanitize_audio_track_settings(GhbValue *settings);
 const gchar* ghb_get_user_audio_lang(GhbValue *settings, const hb_title_t *title, gint track);
 void ghb_audio_list_refresh_selected(signal_user_data_t *ud);
 gint ghb_select_audio_codec(gint mux, hb_audio_config_t *aconfig, gint acodec, gint fallback_acodec, gint copy_mask);
@@ -43,5 +43,6 @@ void ghb_audio_defaults_to_ui(signal_user_data_t *ud);
 GtkListBoxRow* ghb_find_lang_row(GtkListBox *list_box, int lang_idx);
 void ghb_audio_title_change(signal_user_data_t *ud, gboolean title_valid);
 void ghb_clear_audio_selection(GtkBuilder *builder);
+gboolean ghb_audio_quality_enabled(const GhbValue *asettings);
 
 #endif // _AUDIOHANDLER_H_

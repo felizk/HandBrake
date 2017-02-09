@@ -5,8 +5,9 @@
  It may be used under the terms of the GNU General Public License. */
 
 #import "HBSubtitlesDefaultsController.h"
-#import "HBSubtitlesDefaults.h"
 #import "HBLanguagesSelection.h"
+
+@import HandBrakeKit.HBSubtitlesDefaults;
 
 static void *HBSubtitlesDefaultsContext = &HBSubtitlesDefaultsContext;
 
@@ -75,6 +76,12 @@ static void *HBSubtitlesDefaultsContext = &HBSubtitlesDefaultsContext;
 {
     [self.window orderOut:nil];
     [NSApp endSheet:self.window returnCode:NSModalResponseCancel];
+}
+
+- (IBAction)openUserGuide:(id)sender
+{
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL
+                                            URLWithString:@"https://handbrake.fr/docs/en/latest/advanced/audio-subtitle-defaults.html"]];
 }
 
 - (void)dealloc

@@ -75,7 +75,7 @@ NSString *HBPresetsChangedNotification = @"HBPresetsChangedNotification";
 
     for (HBPreset *preset in oldPresets.children)
     {
-        [self.root.children addObject:preset];
+        [self.root insertObject:preset inChildrenAtIndex:self.root.countOfChildren];
     }
 }
 
@@ -84,7 +84,9 @@ NSString *HBPresetsChangedNotification = @"HBPresetsChangedNotification";
     int major, minor, micro;
     hb_presets_current_version(&major, &minor, &micro);
 
-    if ([dict[@"VersionMajor"] intValue] > major)
+    if ([dict[@"VersionMajor"] intValue] > major ||
+        ([dict[@"VersionMajor"] intValue] == major && [dict[@"VersionMinor"] intValue] > minor) ||
+        ([dict[@"VersionMajor"] intValue] == major && [dict[@"VersionMinor"] intValue] == minor && [dict[@"VersionMicro"] intValue] > micro))
     {
         return YES;
     }
@@ -207,7 +209,7 @@ typedef NS_ENUM(NSUInteger, HBPresetLoadingResult) {
     {
         for (NSDictionary *child in presetsDict[@"PresetList"])
         {
-            [self.root.children addObject:[[HBPreset alloc] initWithDictionary:child]];
+            [self.root insertObject:[[HBPreset alloc] initWithDictionary:child] inChildrenAtIndex:self.root.countOfChildren];
         }
 
         if (result == HBPresetLoadingResultOKUpgraded)
@@ -296,7 +298,7 @@ typedef NS_ENUM(NSUInteger, HBPresetLoadingResult) {
     [self.root enumerateObjectsUsingBlock:^(id obj, NSIndexPath *idx, BOOL *stop) {
         if ([obj isBuiltIn] && [obj isLeaf])
         {
-            if ([[obj name] isEqualToString:@"Normal"])
+            if ([[obj name] isEqualToString:@"Fast 1080p30"])
             {
                 normalPreset = obj;
             }

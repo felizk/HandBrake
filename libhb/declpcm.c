@@ -1,6 +1,6 @@
 /* declpcm.c
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -20,7 +20,7 @@ struct hb_work_private_s
     uint32_t    pos;        /* buffer offset for next input data */
 
     int64_t     next_pts;   /* pts for next output frame */
-    int64_t     sequence;
+    int         scr_sequence;
 
     /* the following is frame info for the frame we're currently accumulating */
     uint64_t    duration;   /* frame duratin (in 90KHz ticks) */
@@ -152,7 +152,11 @@ static void lpcmInfo( hb_work_object_t *w, hb_buffer_t *in )
     pv->nsamples = ( pv->duration * pv->samplerate ) / 90000;
     pv->size = pv->nchunks * chunk_size;
 
-    pv->next_pts = in->s.start;
+    if (in->s.start != AV_NOPTS_VALUE)
+    {
+        pv->next_pts     = in->s.start;
+    }
+    pv->scr_sequence = in->s.scr_sequence;
 }
 
 static int declpcmInit( hb_work_object_t * w, hb_job_t * job )
@@ -161,6 +165,7 @@ static int declpcmInit( hb_work_object_t * w, hb_job_t * job )
     w->private_data = pv;
     pv->job = job;
 
+    pv->next_pts = (int64_t)AV_NOPTS_VALUE;
     pv->resample =
         hb_audio_resample_init(AV_SAMPLE_FMT_FLT,
                                w->audio->config.out.mixdown,
@@ -198,8 +203,6 @@ static int declpcmWork( hb_work_object_t * w, hb_buffer_t ** buf_in,
         *buf_in = NULL;
         return HB_WORK_DONE;
     }
-
-    pv->sequence = in->sequence;
 
     // if we have a frame to finish, add enough data from this buf
     // to finish it
@@ -339,10 +342,14 @@ static hb_buffer_t *Decode( hb_work_object_t *w )
 
     if (out != NULL)
     {
-        out->s.start    = pv->next_pts;
-        out->s.duration = pv->duration;
-        pv->next_pts   += pv->duration;
-        out->s.stop     = pv->next_pts;
+        out->s.start         = pv->next_pts;
+        out->s.duration      = pv->duration;
+        if (pv->next_pts != (int64_t)AV_NOPTS_VALUE)
+        {
+            pv->next_pts        += pv->duration;
+            out->s.stop          = pv->next_pts;
+        }
+        out->s.scr_sequence  = pv->scr_sequence;
     }
     return out;
 }

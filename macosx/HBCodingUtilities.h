@@ -19,6 +19,13 @@
 #define decodeDouble(x) x = [decoder decodeDoubleForKey:OBJC_STRINGIFY(x)]
 #define decodeObject(x, cl) x = [HBCodingUtilities decodeObjectOfClass:[cl class] forKey:OBJC_STRINGIFY(x) decoder:decoder];
 
+#define decodeCollectionOfObjects(x, cl, objectcl) x = [HBCodingUtilities decodeObjectOfClasses:[NSSet setWithObjects:[cl class], [objectcl class], nil] forKey:OBJC_STRINGIFY(x) decoder:decoder];
+
+#define decodeCollectionOfObjects2(x, cl, objectcl, objectcl2) x = [HBCodingUtilities decodeObjectOfClasses:[NSSet setWithObjects:[cl class], [objectcl class], [objectcl2 class], nil] forKey:OBJC_STRINGIFY(x) decoder:decoder];
+
+#define decodeCollectionOfObjects3(x, cl, objectcl, objectcl2, objectcl3) x = [HBCodingUtilities decodeObjectOfClasses:[NSSet setWithObjects:[cl class], [objectcl class], [objectcl2 class], [objectcl3 class], nil] forKey:OBJC_STRINGIFY(x) decoder:decoder];
+
+
 #define decodeObjectOrFail(x, class) x = [HBCodingUtilities decodeObjectOfClass:class forKey:OBJC_STRINGIFY(x) decoder:decoder]; if (x == nil) {NSLog(@"Failed to decode: %@", OBJC_STRINGIFY(x)); goto fail;}
 
 NS_ASSUME_NONNULL_BEGIN
@@ -40,6 +47,9 @@ NS_ASSUME_NONNULL_BEGIN
  *  @return the decoder object.
  */
 + (nullable id)decodeObjectOfClass:(Class)aClass forKey:(NSString *)key decoder:(NSCoder *)decoder;
+
+
++ (nullable id)decodeObjectOfClasses:(NSSet *)classes forKey:(NSString *)key decoder:(NSCoder *)decoder;
 
 @end
 

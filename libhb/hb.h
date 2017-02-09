@@ -1,6 +1,6 @@
 /* hb.h
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -17,11 +17,11 @@ extern "C" {
 #include "common.h"
 #include "project.h"
 #include "compat.h"
-#include "hb_dict.h"
 #include "hb_json.h"
 #include "preset.h"
 #include "plist.h"
 #include "param.h"
+#include "colormap.h"
 
 /* hb_init()
    Initializes a libhb session (launches his own thread, detects CPUs,
@@ -30,13 +30,9 @@ extern "C" {
 #define HB_DEBUG_ALL  1
 void          hb_register( hb_work_object_t * );
 void          hb_register_logger( void (*log_cb)(const char* message) );
-hb_handle_t * hb_init( int verbose, int update_check );
-void          hb_update_poll(hb_handle_t *h);
+hb_handle_t * hb_init( int verbose );
 void          hb_log_level_set(hb_handle_t *h, int level);
-
-void          hb_hwd_set_enable( hb_handle_t *h, uint8_t enable );
-int           hb_hwd_enabled( hb_handle_t *h );
-hb_hwd_t    * hb_hwd_get_context();
+void          hb_opencl_set_enable(hb_handle_t *h, int enable_opencl);
 
 /* hb_get_version() */
 const char  * hb_get_full_description();
@@ -53,6 +49,8 @@ int           hb_check_update( hb_handle_t * h, char ** version );
 char *        hb_dvd_name( char * path );
 void          hb_dvd_set_dvdnav( int enable );
 
+int           hb_get_opencl_enabled(hb_handle_t *h);
+
 /* hb_scan()
    Scan the specified path. Can be a DVD device, a VIDEO_TS folder or
    a VOB file. If title_index is 0, scan all titles. */
@@ -60,6 +58,7 @@ void          hb_scan( hb_handle_t *, const char * path,
                        int title_index, int preview_count,
                        int store_previews, uint64_t min_duration );
 void          hb_scan_stop( hb_handle_t * );
+void          hb_force_rescan( hb_handle_t * );
 uint64_t      hb_first_duration( hb_handle_t * );
 
 /* hb_get_titles()
@@ -86,8 +85,11 @@ hb_image_t  * hb_get_preview2(hb_handle_t * h, int title_idx, int picture,
 void          hb_set_anamorphic_size2(hb_geometry_t *src_geo,
                                       hb_geometry_settings_t *geo,
                                       hb_geometry_t *result);
+void          hb_add_filter_dict( hb_job_t * job, hb_filter_object_t * filter,
+                                  const hb_dict_t * settings_in );
 void          hb_add_filter( hb_job_t * job, hb_filter_object_t * filter, 
-                const char * settings );
+                             const char * settings );
+void          hb_add_filter2( hb_value_array_t * list, hb_dict_t * filter );
 
 /* Handling jobs */
 int           hb_count( hb_handle_t * );

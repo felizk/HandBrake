@@ -77,8 +77,6 @@
         @"x264CqSliderFractional":          @"0.50",
         @"HBShowAdvancedTab":               @NO,
         @"HBAutoNamingFormat":              @[@"{Source}", @" ", @"{Title}"],
-        // Hash of the default folders, until there is a better way.
-        @"HBPreviewViewExpandedStatus":     @[@(4097268371718322522), @(3576901712372066251)],
         @"HBDrawerSize":                    NSStringFromSize(NSMakeSize(184, 591))
         }];
 
@@ -190,6 +188,7 @@
     [panel setAllowsMultipleSelection:NO];
     [panel setCanChooseFiles:YES];
     [panel setCanChooseDirectories:NO];
+    [panel setAllowedFileTypes:@[@"app"]];
 
     NSString *sendToAppDirectory;
 	if ([[NSUserDefaults standardUserDefaults] stringForKey:@"LastSendToAppDirectory"])
@@ -209,9 +208,10 @@
             NSURL *sendToAppDirectoryURL = [sendToAppURL URLByDeletingLastPathComponent];
             [[NSUserDefaults standardUserDefaults] setObject:[sendToAppDirectoryURL path] forKey:@"LastSendToAppDirectory"];
 
+            // We set the name of the app to send to in the display field
             NSString *sendToAppName = [[sendToAppURL lastPathComponent] stringByDeletingPathExtension];
-            /* we set the name of the app to send to in the display field */
             [fSendEncodeToAppField setStringValue:sendToAppName];
+
             [[NSUserDefaults standardUserDefaults] setObject:[fSendEncodeToAppField stringValue] forKey:@"HBSendToApp"];
         }
     }];
@@ -221,7 +221,7 @@
 
 - (NSString *)tokenField:(NSTokenField *)tokenField displayStringForRepresentedObject:(id)representedObject
 {
-    if ([representedObject rangeOfString: @"{"].location == 0)
+    if ([representedObject rangeOfString: @"{"].location == 0 && [representedObject length] > 1)
     {
         return [(NSString *)representedObject substringWithRange:NSMakeRange(1, [(NSString*)representedObject length]-2)];
     }
@@ -284,44 +284,61 @@
 
 - (void) setPrefView: (id) sender
 {
-    NSView * view = fGeneralView;
-    if( sender )
+    NSView *view = fGeneralView;
+    if (sender)
     {
-        NSString * identifier = [sender itemIdentifier];
-        if( [identifier isEqualToString: TOOLBAR_AUDIO] )
+        NSString *identifier = [sender itemIdentifier];
+        if ([identifier isEqualToString:TOOLBAR_AUDIO])
+        {
             view = fAudioView;
-        else if( [identifier isEqualToString: TOOLBAR_ADVANCED] )
+        }
+        else if([identifier isEqualToString:TOOLBAR_ADVANCED])
+        {
             view = fAdvancedView;
-        else;
+        }
     }
 
-    NSWindow * window = [self window];
-    if( [window contentView] == view )
+    NSWindow *window =  self.window;
+    if (window.contentView == view)
+    {
         return;
+    }
 
-    NSRect windowRect = [window frame];
-    CGFloat difference = ( [view frame].size.height - [[window contentView] frame].size.height );
-    windowRect.origin.y -= difference;
-    windowRect.size.height += difference;
+    window.contentView = view;
 
-    [view setHidden: YES];
-    [window setContentView: view];
-    [window setFrame: windowRect display: YES animate: YES];
-    [view setHidden: NO];
+    if (window.isVisible)
+        {
+            view.hidden = YES;
 
-    //set title label
-    if( sender )
-        [window setTitle: [sender label]];
+            [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
+                if ([context respondsToSelector:@selector(setAllowsImplicitAnimation:)])
+                {
+                    context.allowsImplicitAnimation = YES;
+                }
+                [window layoutIfNeeded];
+
+            } completionHandler:^{
+                view.hidden = NO;
+            }];
+    }
+
+    // set title label
+    if (sender)
+    {
+        window.title = [sender label];
+    }
     else
     {
-        NSToolbar * toolbar = [window toolbar];
-        NSString * itemIdentifier = [toolbar selectedItemIdentifier];
-        for( NSToolbarItem * item in [toolbar items] )
-            if( [[item itemIdentifier] isEqualToString: itemIdentifier] )
+        NSToolbar *toolbar = window.toolbar;
+        NSString *itemIdentifier = toolbar.selectedItemIdentifier;
+        for (NSToolbarItem *item in toolbar.items)
+        {
+            if ([item.itemIdentifier isEqualToString:itemIdentifier])
             {
-                [window setTitle: [item label]];
+                window.title = item.label;
                 break;
             }
+        }
     }
 }
 

@@ -31,6 +31,7 @@ namespace HandBrakeWPF.ViewModels
     using Ookii.Dialogs.Wpf;
 
     using Execute = Caliburn.Micro.Execute;
+    using SystemInfo = HandBrake.ApplicationServices.Utilities.SystemInfo;
 
     /// <summary>
     /// The Options View Model
@@ -41,6 +42,8 @@ namespace HandBrakeWPF.ViewModels
 
         private readonly IUserSettingService userSettingService;
         private readonly IUpdateService updateService;
+        private readonly IErrorService errorService;
+
         private string arguments;
         private string autoNameDefaultPath;
         private bool automaticallyNameFiles;
@@ -84,11 +87,12 @@ namespace HandBrakeWPF.ViewModels
         private bool removePunctuation;
         private bool resetWhenDoneAction;
         private VideoScaler selectedScalingMode;
-        private bool enableDxvaDecoding;
         private bool disableQuickSyncDecoding;
         private bool isClScaling;
         private bool showQueueInline;
         private bool pauseOnLowDiskspace;
+
+        private bool useQsvDecodeForNonQsvEnc;
 
         #endregion
 
@@ -106,11 +110,15 @@ namespace HandBrakeWPF.ViewModels
         /// <param name="aboutViewModel">
         /// The about View Model.
         /// </param>
-        public OptionsViewModel(IUserSettingService userSettingService, IUpdateService updateService, IAboutViewModel aboutViewModel)
+        /// <param name="errorService">
+        /// The error Service.
+        /// </param>
+        public OptionsViewModel(IUserSettingService userSettingService, IUpdateService updateService, IAboutViewModel aboutViewModel, IErrorService errorService)
         {
             this.Title = "Options";
             this.userSettingService = userSettingService;
             this.updateService = updateService;
+            this.errorService = errorService;
             this.AboutViewModel = aboutViewModel;
             this.OnLoad();
 
@@ -390,7 +398,11 @@ namespace HandBrakeWPF.ViewModels
 
             set
             {
-                this.autonameFormat = value;
+                if (this.IsValidAutonameFormat(value, false))
+                {
+                    this.autonameFormat = value;   
+                } 
+
                 this.NotifyOfPropertyChange("AutonameFormat");
             }
         }
@@ -870,26 +882,7 @@ namespace HandBrakeWPF.ViewModels
                 }
                 this.disableQuickSyncDecoding = value;
                 this.NotifyOfPropertyChange(() => this.DisableQuickSyncDecoding);
-            }
-        }
-
-        /// <summary>
-        /// Gets or sets a value indicating whether enable dxva decoding.
-        /// </summary>
-        public bool EnableDxvaDecoding
-        {
-            get
-            {
-                return this.enableDxvaDecoding;
-            }
-            set
-            {
-                if (value.Equals(this.enableDxvaDecoding))
-                {
-                    return;
-                }
-                this.enableDxvaDecoding = value;
-                this.NotifyOfPropertyChange(() => this.EnableDxvaDecoding);
+                this.NotifyOfPropertyChange(() => this.IsUseQsvDecAvailable);
             }
         }
 
@@ -917,6 +910,34 @@ namespace HandBrakeWPF.ViewModels
             get
             {
                 return SystemInfo.IsQsvAvailable;
+            }
+        }
+
+        /// <summary>
+        /// Gets a value indicating whether is use qsv dec available.
+        /// </summary>
+        public bool IsUseQsvDecAvailable
+        {
+            get
+            {
+                return IsQuickSyncAvailable && !this.DisableQuickSyncDecoding;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether to use qsv decode for non qsv encoders
+        /// </summary>
+        public bool UseQSVDecodeForNonQSVEnc
+        {
+            get
+            {
+                return this.useQsvDecodeForNonQsvEnc;
+            }
+            set
+            {
+                if (value == this.useQsvDecodeForNonQsvEnc) return;
+                this.useQsvDecodeForNonQsvEnc = value;
+                this.NotifyOfPropertyChange(() => this.UseQSVDecodeForNonQSVEnc);
             }
         }
 
@@ -1124,7 +1145,7 @@ namespace HandBrakeWPF.ViewModels
         public void DownloadUpdate()
         {
             this.UpdateMessage = "Preparing for Update ...";
-            this.updateService.DownloadFile(this.updateInfo.DownloadFile, this.DownloadComplete, this.DownloadProgress);
+            this.updateService.DownloadFile(this.updateInfo.DownloadFile, this.updateInfo.Signature, this.DownloadComplete, this.DownloadProgress);
         }
 
         /// <summary>
@@ -1173,7 +1194,6 @@ namespace HandBrakeWPF.ViewModels
             if (this.userSettingService.GetUserSetting<bool>(UserSettingConstants.ResetWhenDoneAction))
             {
                 this.WhenDone = "Do nothing";
-                this.userSettingService.SetUserSetting(UserSettingConstants.WhenCompleteAction, "Do nothing");
             }
 
             this.SendFileAfterEncode = this.userSettingService.GetUserSetting<bool>(UserSettingConstants.SendFile);
@@ -1196,7 +1216,8 @@ namespace HandBrakeWPF.ViewModels
                 this.AutoNameDefaultPath = "Click 'Browse' to set the default location";
 
             // Store auto name format
-            this.AutonameFormat = this.userSettingService.GetUserSetting<string>(UserSettingConstants.AutoNameFormat) ?? string.Empty;
+            string anf = this.userSettingService.GetUserSetting<string>(UserSettingConstants.AutoNameFormat) ?? string.Empty;
+            this.AutonameFormat = this.IsValidAutonameFormat(anf, true) ? anf : "{source}-{title}";
 
             // Use iPod/iTunes friendly .m4v extension for MP4 files.
             this.mp4ExtensionOptions.Clear();
@@ -1223,8 +1244,8 @@ namespace HandBrakeWPF.ViewModels
             // Video
             // #############################
             this.DisableQuickSyncDecoding = this.userSettingService.GetUserSetting<bool>(UserSettingConstants.DisableQuickSyncDecoding);
-            this.EnableDxvaDecoding = this.userSettingService.GetUserSetting<bool>(UserSettingConstants.EnableDxva);
             this.SelectedScalingMode = this.userSettingService.GetUserSetting<VideoScaler>(UserSettingConstants.ScalingMode);
+            this.UseQSVDecodeForNonQSVEnc = this.userSettingService.GetUserSetting<bool>(UserSettingConstants.UseQSVDecodeForNonQSVEnc);
 
             // #############################
             // CLI
@@ -1294,6 +1315,15 @@ namespace HandBrakeWPF.ViewModels
 
             // Use dvdnav
             this.DisableLibdvdNav = userSettingService.GetUserSetting<bool>(UserSettingConstants.DisableLibDvdNav);
+
+        }
+
+        /// <summary>
+        /// Some settings can be changed outside of this window. This will refresh their UI controls.
+        /// </summary>
+        public void UpdateSettings()
+        {
+            this.WhenDone = userSettingService.GetUserSetting<string>("WhenCompleteAction");
         }
 
         /// <summary>
@@ -1325,8 +1355,8 @@ namespace HandBrakeWPF.ViewModels
 
             /* Video */
             this.userSettingService.SetUserSetting(UserSettingConstants.DisableQuickSyncDecoding, this.DisableQuickSyncDecoding);
-            this.userSettingService.SetUserSetting(UserSettingConstants.EnableDxva, this.EnableDxvaDecoding);
             this.userSettingService.SetUserSetting(UserSettingConstants.ScalingMode, this.SelectedScalingMode);
+            this.userSettingService.SetUserSetting(UserSettingConstants.UseQSVDecodeForNonQSVEnc, this.UseQSVDecodeForNonQSVEnc);
 
             /* System and Logging */
             userSettingService.SetUserSetting(UserSettingConstants.ProcessPriority, this.SelectedPriority);
@@ -1412,10 +1442,13 @@ namespace HandBrakeWPF.ViewModels
         private void DownloadComplete(DownloadStatus info)
         {
             this.UpdateAvailable = false;
-            this.UpdateMessage = info.WasSuccessful ? Resources.OptionsViewModel_UpdateDownloaded : Resources.OptionsViewModel_UpdateFailed;
+            this.UpdateMessage = info.WasSuccessful ? Resources.OptionsViewModel_UpdateDownloaded : info.Message;
 
-            Process.Start(Path.Combine(Path.GetTempPath(), "handbrake-setup.exe"));
-            Execute.OnUIThread(() => Application.Current.Shutdown());
+            if (info.WasSuccessful)
+            {
+                Process.Start(Path.Combine(Path.GetTempPath(), "handbrake-setup.exe"));
+                Execute.OnUIThread(() => Application.Current.Shutdown());
+            }
         }
 
         /// <summary>
@@ -1427,6 +1460,34 @@ namespace HandBrakeWPF.ViewModels
         public void GotoTab(OptionsTab tab)
         {
             this.SelectedTab = tab;
+        }
+
+        /// <summary>
+        /// Validate the Autoname Fileformat string
+        /// </summary>
+        /// <param name="input">The format string</param>
+        /// <param name="isSilent">Don't show an error dialog if true.</param>
+        /// <returns>True if valid</returns>
+        private bool IsValidAutonameFormat(string input, bool isSilent)
+        {
+            foreach (var characterToTest in input)
+            {
+                // we binary search for the character in the invalid set. This should be lightning fast.
+                if (Array.BinarySearch(Path.GetInvalidFileNameChars(), characterToTest) >= 0)
+                {
+                    if (!isSilent)
+                    {
+                        this.errorService.ShowMessageBox(
+                            ResourcesUI.OptionsView_InvalidFileFormatChars,
+                            Resources.Error,
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Error);
+                    }
+                    return false;
+                }
+            }
+
+            return true;
         }
     }
 }

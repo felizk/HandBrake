@@ -11,20 +11,26 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+typedef NS_ENUM(NSUInteger, HBPictureAnarmophicMode) {
+    HBPictureAnarmophicModeNone,
+    HBPictureAnarmophicModeStrict,
+    HBPictureAnarmophicModeLoose,
+    HBPictureAnarmophicModeCustom,
+    HBPictureAnarmophicModeAuto
+};
+
 extern NSString * const HBPictureChangedNotification;
 
 /**
  * HBPicture
  */
-@interface HBPicture : NSObject <NSSecureCoding, NSCopying, HBPresetCoding>
-
-- (instancetype)initWithTitle:(HBTitle *)title;
+@interface HBPicture : NSObject <NSSecureCoding, NSCopying>
 
 @property (nonatomic, readwrite) int width;
 @property (nonatomic, readwrite) int height;
 
 @property (nonatomic, readwrite) BOOL keepDisplayAspect;
-@property (nonatomic, readwrite) int anamorphicMode;
+@property (nonatomic, readwrite) HBPictureAnarmophicMode anamorphicMode;
 @property (nonatomic, readwrite) int modulus;
 
 /**

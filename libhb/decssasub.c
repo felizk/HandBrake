@@ -1,6 +1,6 @@
 /* decssasub.c
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -226,7 +226,9 @@ void hb_ssa_style_init(hb_subtitle_style_t *style)
     style->bg_alpha  = 0xFF;
 }
 
-static hb_buffer_t *ssa_decode_line_to_mkv_ssa( hb_work_object_t * w, uint8_t *in_data, int in_size, int in_sequence );
+static hb_buffer_t *
+ssa_decode_line_to_mkv_ssa( hb_work_object_t * w, hb_buffer_t * in,
+                            uint8_t *in_data, int in_size );
 
 /*
  * Decodes a single SSA packet to one or more TEXTSUB or PICTURESUB subtitle packets.
@@ -256,35 +258,9 @@ static hb_buffer_t *ssa_decode_packet( hb_work_object_t * w, hb_buffer_t *in )
             continue;
 
         // Decode an individual SSA line
-        buf = ssa_decode_line_to_mkv_ssa(w, (uint8_t *)curLine,
-                                         strlen(curLine), in->sequence);
+        buf = ssa_decode_line_to_mkv_ssa(w, in,
+                                         (uint8_t *)curLine, strlen(curLine));
         hb_buffer_list_append(&list, buf);
-    }
-
-    // For point-to-point encoding, when the start time of the stream
-    // may be offset, the timestamps of the subtitles must be offset as well.
-    //
-    // HACK: Here we are making the assumption that, under normal circumstances,
-    //       the output display time of the first output packet is equal to the
-    //       display time of the input packet.
-    //
-    //       During point-to-point encoding, the display time of the input
-    //       packet will be offset to compensate.
-    //
-    //       Therefore we offset all of the output packets by a slip amount
-    //       such that first output packet's display time aligns with the
-    //       input packet's display time. This should give the correct time
-    //       when point-to-point encoding is in effect.
-    buf = hb_buffer_list_head(&list);
-    if (buf && buf->s.start > in->s.start)
-    {
-        int64_t slip = buf->s.start - in->s.start;
-        while (buf != NULL)
-        {
-            buf->s.start -= slip;
-            buf->s.stop -= slip;
-            buf = buf->next;
-        }
     }
 
     return hb_buffer_list_clear(&list);
@@ -346,7 +322,9 @@ static uint8_t *find_field( uint8_t *pos, uint8_t *end, int fieldNum )
  *   ReadOrder,Marked,          Style,Name,MarginL,MarginR,MarginV,Effect,Text '\0'
  *   1         2                3     4    5       6       7       8      9
  */
-static hb_buffer_t *ssa_decode_line_to_mkv_ssa( hb_work_object_t * w, uint8_t *in_data, int in_size, int in_sequence )
+static hb_buffer_t *
+ssa_decode_line_to_mkv_ssa( hb_work_object_t * w, hb_buffer_t * in,
+                            uint8_t *in_data, int in_size )
 {
     hb_work_private_t * pv = w->private_data;
     hb_buffer_t * out;
@@ -393,11 +371,12 @@ static hb_buffer_t *ssa_decode_line_to_mkv_ssa( hb_work_object_t * w, uint8_t *i
     strcat( mkvIn, "," );
     strcat( mkvIn, (char *)styleToTextFields );
 
-    out->size = strlen(mkvIn) + 1;
-    out->s.frametype = HB_FRAME_SUBTITLE;
-    out->s.start = in_start;
-    out->s.stop = in_stop;
-    out->sequence = in_sequence;
+    out->size           = strlen(mkvIn) + 1;
+    out->s.frametype    = HB_FRAME_SUBTITLE;
+    out->s.start        = in->s.start;
+    out->s.duration     = in_stop - in_start;
+    out->s.stop         = in->s.start + out->s.duration;
+    out->s.scr_sequence = in->s.scr_sequence;
 
     if( out->size == 0 )
     {

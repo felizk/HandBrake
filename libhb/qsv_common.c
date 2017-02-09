@@ -1,6 +1,6 @@
 /* qsv_common.c
  *
- * Copyright (c) 2003-2016 HandBrake Team
+ * Copyright (c) 2003-2017 HandBrake Team
  * This file is part of the HandBrake source code.
  * Homepage: <http://handbrake.fr/>.
  * It may be used under the terms of the GNU General Public License v2.
@@ -109,6 +109,7 @@ enum
     QSV_G3, // Haswell or equivalent
     QSV_G4, // Broadwell or equivalent
     QSV_G5, // Skylake or equivalent
+    QSV_G6, // Kaby Lake or equivalent
     QSV_FU, // always last (future processors)
 };
 static int qsv_hardware_generation(int cpu_platform)
@@ -129,6 +130,8 @@ static int qsv_hardware_generation(int cpu_platform)
             return QSV_G4;
         case HB_CPU_PLATFORM_INTEL_SKL:
             return QSV_G5;
+        case HB_CPU_PLATFORM_INTEL_KBL:
+            return QSV_G6;
         default:
             return QSV_FU;
     }
@@ -196,7 +199,7 @@ static void init_video_param(mfxVideoParam *videoParam)
     videoParam->mfx.FrameInfo.Height        = 1088;
     videoParam->mfx.FrameInfo.CropH         = 1080;
     videoParam->mfx.FrameInfo.AspectRatioH  = 1;
-    videoParam->AsyncDepth                  = AV_QSV_ASYNC_DEPTH_DEFAULT;
+    videoParam->AsyncDepth                  = HB_QSV_ASYNC_DEPTH_DEFAULT;
     videoParam->IOPattern                   = MFX_IOPATTERN_IN_SYSTEM_MEMORY;
 }
 
@@ -769,21 +772,23 @@ void hb_qsv_info_print()
     hb_log("Intel Quick Sync Video support: %s",
            hb_qsv_available() ? "yes": "no");
 
-    // also print the details
-    if (qsv_hardware_version.Version)
-    {
-        hb_log(" - Intel Media SDK hardware: API %"PRIu16".%"PRIu16" (minimum: %"PRIu16".%"PRIu16")",
-               qsv_hardware_version.Major, qsv_hardware_version.Minor,
-               HB_QSV_MINVERSION_MAJOR,    HB_QSV_MINVERSION_MINOR);
-    }
-    if (qsv_software_version.Version)
-    {
-        hb_log(" - Intel Media SDK software: API %"PRIu16".%"PRIu16" (minimum: %"PRIu16".%"PRIu16")",
-               qsv_software_version.Major, qsv_software_version.Minor,
-               HB_QSV_MINVERSION_MAJOR,    HB_QSV_MINVERSION_MINOR);
-    }
     if (hb_qsv_available())
     {
+        // also print the details
+        if (qsv_hardware_version.Version)
+        {
+            hb_log(" - Intel Media SDK hardware: API %"PRIu16".%"PRIu16" (minimum: %"PRIu16".%"PRIu16")",
+                   qsv_hardware_version.Major, qsv_hardware_version.Minor,
+                   HB_QSV_MINVERSION_MAJOR,    HB_QSV_MINVERSION_MINOR);
+        }
+        
+        if (qsv_software_version.Version)
+        {
+            hb_log(" - Intel Media SDK software: API %"PRIu16".%"PRIu16" (minimum: %"PRIu16".%"PRIu16")",
+                   qsv_software_version.Major, qsv_software_version.Minor,
+                   HB_QSV_MINVERSION_MAJOR,    HB_QSV_MINVERSION_MINOR);
+        }
+    
         if (hb_qsv_info_avc != NULL && hb_qsv_info_avc->available)
         {
             hb_log(" - H.264 encoder: yes");
@@ -905,6 +910,12 @@ const char* hb_qsv_decode_get_codec_name(enum AVCodecID codec_id)
         case AV_CODEC_ID_H264:
             return "h264_qsv";
 
+        case AV_CODEC_ID_HEVC:
+            return "hevc_qsv";
+
+        case AV_CODEC_ID_MPEG2VIDEO:
+            return "mpeg2_qsv";
+
         default:
             return NULL;
     }
@@ -912,8 +923,7 @@ const char* hb_qsv_decode_get_codec_name(enum AVCodecID codec_id)
 
 int hb_qsv_decode_is_enabled(hb_job_t *job)
 {
-    return ((job != NULL && job->qsv.decode)                        &&
-            (job->vcodec                      & HB_VCODEC_QSV_MASK) &&
+    return ((job != NULL && job->qsv.decode) &&
             (job->title->video_decode_support & HB_DECODE_SUPPORT_QSV));
 }
 
@@ -1890,7 +1900,7 @@ int hb_qsv_param_default(hb_qsv_param_t *param, mfxVideoParam *videoParam,
         param->videoParam->mfx.GopPicSize   = 0; // use Media SDK default
         param->videoParam->mfx.GopRefDist   = 0; // use Media SDK default
         // introduced in API 1.1
-        param->videoParam->AsyncDepth = AV_QSV_ASYNC_DEPTH_DEFAULT;
+        param->videoParam->AsyncDepth = HB_QSV_ASYNC_DEPTH_DEFAULT;
         // introduced in API 1.3
         param->videoParam->mfx.BRCParamMultiplier = 0; // no multiplier
 
@@ -2039,8 +2049,9 @@ uint8_t hb_qsv_frametype_xlat(uint16_t qsv_frametype, uint16_t *out_flags)
     uint16_t flags     = 0;
     uint8_t  frametype = 0;
 
-    if      (qsv_frametype & MFX_FRAMETYPE_IDR)
+    if (qsv_frametype & MFX_FRAMETYPE_IDR)
     {
+        flags |= HB_FLAG_FRAMETYPE_KEY;
         frametype = HB_FRAME_IDR;
     }
     else if (qsv_frametype & MFX_FRAMETYPE_I)
@@ -2058,7 +2069,7 @@ uint8_t hb_qsv_frametype_xlat(uint16_t qsv_frametype, uint16_t *out_flags)
 
     if (qsv_frametype & MFX_FRAMETYPE_REF)
     {
-        flags |= HB_FRAME_REF;
+        flags |= HB_FLAG_FRAMETYPE_REF;
     }
 
     if (out_flags != NULL)
@@ -2137,6 +2148,13 @@ void hb_qsv_force_workarounds()
     qsv_software_info_hevc.capabilities &= FORCE_WORKAROUNDS;
     qsv_hardware_info_hevc.capabilities &= FORCE_WORKAROUNDS;
 #undef FORCE_WORKAROUNDS
+}
+
+#else
+
+int hb_qsv_available()
+{
+    return 0;
 }
 
 #endif // USE_QSV

@@ -1,6 +1,6 @@
 /* decpgssub.c
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -52,7 +52,7 @@ static int decsubInit( hb_work_object_t * w, hb_job_t * job )
     hb_buffer_list_clear(&pv->list_pass);
     pv->discard_subtitle = 1;
     pv->seen_forced_sub  = 0;
-    pv->last_pts         = 0;
+    pv->last_pts         = AV_NOPTS_VALUE;
     pv->context          = context;
     pv->job              = job;
 
@@ -303,7 +303,14 @@ static int decsubWork( hb_work_object_t * w, hb_buffer_t ** buf_in,
                     //      occurs after a discontinuity and before the
                     //      next audio or video packet which re-establishes
                     //      timing (afaik).
-                    pts = pv->last_pts + 3 * 90000LL;
+                    if (pv->last_pts == AV_NOPTS_VALUE)
+                    {
+                        pts = 0LL;
+                    }
+                    else
+                    {
+                        pts = pv->last_pts + 3 * 90000LL;
+                    }
                     hb_log("[warning] decpgssub: track %d, invalid PTS",
                            w->subtitle->out_track);
                 }
@@ -316,9 +323,10 @@ static int decsubWork( hb_work_object_t * w, hb_buffer_t ** buf_in,
                 // overshot the next pgs pts.
                 //
                 // assign a 1 second duration
+                hb_log("decpgssub: track %d, non-monotically increasing PTS, last %"PRId64" current %"PRId64"",
+                       w->subtitle->out_track,
+                       pv->last_pts, pts);
                 pts = pv->last_pts + 1 * 90000LL;
-                hb_log("[warning] decpgssub: track %d, non-monotically increasing PTS",
-                       w->subtitle->out_track);
             }
             pv->last_pts = pts;
 
@@ -362,7 +370,6 @@ static int decsubWork( hb_work_object_t * w, hb_buffer_t ** buf_in,
                     hb_buffer_list_close(&pv->list_pass);
 
                     out->s        = in->s;
-                    out->sequence = in->sequence;
                 }
                 out->s.frametype    = HB_FRAME_SUBTITLE;
                 out->s.renderOffset = AV_NOPTS_VALUE;
@@ -400,10 +407,10 @@ static int decsubWork( hb_work_object_t * w, hb_buffer_t ** buf_in,
 
                     out->s.frametype     = HB_FRAME_SUBTITLE;
                     out->s.id            = in->s.id;
-                    out->sequence        = in->sequence;
                     out->s.start         = pts;
                     out->s.stop          = AV_NOPTS_VALUE;
                     out->s.renderOffset  = AV_NOPTS_VALUE;
+                    out->s.scr_sequence  = in->s.scr_sequence;
                     out->f.x             = x0;
                     out->f.y             = y0;
                     out->f.window_width  = pv->context->width;
@@ -434,8 +441,8 @@ static int decsubWork( hb_work_object_t * w, hb_buffer_t ** buf_in,
                                 uint8_t color;
 
                                 pixel = yy * rect->w + xx;
-                                color = rect->pict.data[0][pixel];
-                                argb = ((uint32_t*)rect->pict.data[1])[color];
+                                color = rect->data[0][pixel];
+                                argb = ((uint32_t*)rect->data[1])[color];
                                 yuv = hb_rgb2yuv(argb);
 
                                 lum[xx] = (yuv >> 16) & 0xff;
@@ -460,16 +467,19 @@ static int decsubWork( hb_work_object_t * w, hb_buffer_t ** buf_in,
                 }
                 else
                 {
-                    out = hb_buffer_init( 1 );
+                    out = hb_buffer_init( 0 );
 
-                    out->s.frametype = HB_FRAME_SUBTITLE;
-                    out->s.id     = in->s.id;
-                    out->s.start  = pts;
-                    out->s.stop   = pts;
-                    out->f.x      = 0;
-                    out->f.y      = 0;
-                    out->f.width  = 0;
-                    out->f.height = 0;
+                    out->s.frametype    = HB_FRAME_SUBTITLE;
+                    out->s.flags        = HB_BUF_FLAG_EOS;
+                    out->s.id           = in->s.id;
+                    out->s.start        = pts;
+                    out->s.stop         = pts;
+                    out->s.renderOffset = AV_NOPTS_VALUE;
+                    out->s.scr_sequence = in->s.scr_sequence;
+                    out->f.x            = 0;
+                    out->f.y            = 0;
+                    out->f.width        = 0;
+                    out->f.height       = 0;
                 }
             }
             hb_buffer_list_append(&pv->list, out);

@@ -1,6 +1,6 @@
 /* qsv_common.h
  *
- * Copyright (c) 2003-2016 HandBrake Team
+ * Copyright (c) 2003-2017 HandBrake Team
  * This file is part of the HandBrake source code.
  * Homepage: <http://handbrake.fr/>.
  * It may be used under the terms of the GNU General Public License v2.
@@ -10,13 +10,17 @@
 #ifndef HB_QSV_COMMON_H
 #define HB_QSV_COMMON_H
 
+int            hb_qsv_available();
+
+#ifdef USE_QSV
+
 #include "mfx/mfxvideo.h"
 #include "mfx/mfxplugin.h"
 #include "libavcodec/avcodec.h"
 
 /* Minimum Intel Media SDK version (currently 1.3, for Sandy Bridge support) */
-#define HB_QSV_MINVERSION_MAJOR AV_QSV_MSDK_VERSION_MAJOR
-#define HB_QSV_MINVERSION_MINOR AV_QSV_MSDK_VERSION_MINOR
+#define HB_QSV_MINVERSION_MAJOR HB_QSV_MSDK_VERSION_MAJOR
+#define HB_QSV_MINVERSION_MINOR HB_QSV_MSDK_VERSION_MINOR
 
 /*
  * Get & store all available Intel Quick Sync information:
@@ -64,7 +68,6 @@ typedef struct hb_qsv_info_s
 } hb_qsv_info_t;
 
 /* Intel Quick Sync Video utilities */
-int            hb_qsv_available();
 int            hb_qsv_video_encoder_is_enabled(int encoder);
 int            hb_qsv_audio_encoder_is_enabled(int encoder);
 int            hb_qsv_info_init();
@@ -188,4 +191,5 @@ const char* hb_qsv_impl_get_name(int impl);
 
 void hb_qsv_force_workarounds(); // for developers only
 
-#endif
+#endif // USE_QSV
+#endif // HB_QSV_COMMON_H

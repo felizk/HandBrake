@@ -1,6 +1,6 @@
 /* decvobsub.c
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -38,8 +38,10 @@ struct hb_work_private_s
     int           size_got;
     int           size_rle;
     int64_t       pts;
+    int           current_scr_sequence;
     int64_t       pts_start;
     int64_t       pts_stop;
+    int           scr_sequence;
     int           pts_forced;
     int           x;
     int           y;
@@ -124,11 +126,11 @@ int decsubWork( hb_work_object_t * w, hb_buffer_t ** buf_in,
             memcpy( pv->buf->data, in->data, in->size );
             pv->buf->s.id = in->s.id;
             pv->buf->s.frametype = HB_FRAME_SUBTITLE;
-            pv->buf->sequence = in->sequence;
             pv->size_got = in->size;
             if( in->s.start >= 0 )
             {
-                pv->pts      = in->s.start;
+                pv->pts                  = in->s.start;
+                pv->current_scr_sequence = in->s.scr_sequence;
             }
         }
     }
@@ -139,11 +141,11 @@ int decsubWork( hb_work_object_t * w, hb_buffer_t ** buf_in,
         {
             memcpy( pv->buf->data + pv->size_got, in->data, in->size );
             pv->buf->s.id = in->s.id;
-            pv->buf->sequence = in->sequence;
             pv->size_got += in->size;
             if( in->s.start >= 0 )
             {
-                pv->pts = in->s.start;
+                pv->pts                  = in->s.start;
+                pv->current_scr_sequence = in->s.scr_sequence;
             }
         }
         else
@@ -169,7 +171,6 @@ int decsubWork( hb_work_object_t * w, hb_buffer_t ** buf_in,
         if( buf_out && *buf_out )
         {
             (*buf_out)->s.id = in->s.id;
-            (*buf_out)->sequence = in->sequence;
         }
 
         /* Wait for the next one */
@@ -183,7 +184,8 @@ int decsubWork( hb_work_object_t * w, hb_buffer_t ** buf_in,
             // of the current sub as the start of the next.
             // This can happen if reader invalidates timestamps while 
             // waiting for an audio to update the SCR.
-            pv->pts      = pv->pts_stop;
+            pv->pts                  = pv->pts_stop;
+            pv->current_scr_sequence = pv->scr_sequence;
         }
     }
 
@@ -194,7 +196,7 @@ void decsubClose( hb_work_object_t * w )
 {
     hb_work_private_t * pv = w->private_data;
 
-    if ( pv->buf )
+    if ( pv && pv->buf )
         hb_buffer_close( &pv->buf );
     free( w->private_data );
 }
@@ -216,7 +218,7 @@ hb_work_object_t hb_decvobsub =
  * header), the width and height of the subpicture and the colors and
  * alphas used in it
  **********************************************************************/
-static void ParseControls( hb_work_object_t * w )
+static int ParseControls( hb_work_object_t * w )
 {
     hb_work_private_t * pv = w->private_data;
     uint8_t * buf = pv->buf->data;
@@ -236,11 +238,20 @@ static void ParseControls( hb_work_object_t * w )
 
     for( i = pv->size_rle; ; )
     {
+        if ( i + 1 >= pv->buf->size )
+        {
+            return 1;
+        }
+
         date = ( buf[i] << 8 ) | buf[i+1]; i += 2;
         next = ( buf[i] << 8 ) | buf[i+1]; i += 2;
 
         for( ;; )
         {
+            if ( i >= pv->buf->size )
+            {
+                return 1;
+            }
             command = buf[i++];
 
             /*
@@ -258,21 +269,26 @@ static void ParseControls( hb_work_object_t * w )
             switch( command )
             {
                 case 0x00: // 0x00 - FSTA_DSP - Forced Start Display, no arguments
-                    pv->pts_start = pv->pts + date * 1024;
-                    pv->pts_forced = 1;
+                    pv->pts_start    = pv->pts + date * 1024;
+                    pv->scr_sequence = pv->current_scr_sequence;
+                    pv->pts_forced   = 1;
                     w->subtitle->hits++;
                     w->subtitle->forced_hits++;
                     break;
 
                 case 0x01: // 0x01 - STA_DSP - Start Display, no arguments
-                    pv->pts_start = pv->pts + date * 1024;
-                    pv->pts_forced  = 0;
+                    pv->pts_start    = pv->pts + date * 1024;
+                    pv->scr_sequence = pv->current_scr_sequence;
+                    pv->pts_forced   = 0;
                     w->subtitle->hits++;
                     break;
 
                 case 0x02: // 0x02 - STP_DSP - Stop Display, no arguments
-                    if(pv->pts_stop == AV_NOPTS_VALUE)
-                        pv->pts_stop = pv->pts + date * 1024;
+                    if (pv->pts_stop == AV_NOPTS_VALUE)
+                    {
+                        pv->pts_stop     = pv->pts + date * 1024;
+                        pv->scr_sequence = pv->current_scr_sequence;
+                    }
                     break;
 
                 case 0x03: // 0x03 - SET_COLOR - Set Colour indices
@@ -284,6 +300,11 @@ static void ParseControls( hb_work_object_t * w )
                      */
                     int colors[4];
                     int j;
+
+                    if ( i + 1 >= pv->buf->size )
+                    {
+                        return 1;
+                    }
 
                     colors[0] = (buf[i+0]>>4)&0x0f;
                     colors[1] = (buf[i+0])&0x0f;
@@ -328,6 +349,11 @@ static void ParseControls( hb_work_object_t * w )
                      */
                     uint8_t    alpha[4];
 
+                    if ( i + 1 >= pv->buf->size )
+                    {
+                        return 1;
+                    }
+
                     alpha[3] = ((buf[i+0] >> 4) & 0x0f) << 4;
                     alpha[2] = ((buf[i+0]     ) & 0x0f) << 4;
                     alpha[1] = ((buf[i+1] >> 4) & 0x0f) << 4;
@@ -349,7 +375,8 @@ static void ParseControls( hb_work_object_t * w )
                     // fading-out
                     if (currAlpha < lastAlpha && pv->pts_stop == AV_NOPTS_VALUE)
                     {
-                        pv->pts_stop = pv->pts + date * 1024;
+                        pv->pts_stop     = pv->pts + date * 1024;
+                        pv->scr_sequence = pv->current_scr_sequence;
                     }
 
                     i += 2;
@@ -357,6 +384,11 @@ static void ParseControls( hb_work_object_t * w )
                 }
                 case 0x05: // 0x05 - SET_DAREA - defines the display area
                 {
+                    if ( i + 4 >= pv->buf->size )
+                    {
+                        return 1;
+                    }
+
                     pv->x     = (buf[i+0]<<4) | ((buf[i+1]>>4)&0x0f);
                     pv->width = (((buf[i+1]&0x0f)<<8)| buf[i+2]) - pv->x + 1;
                     pv->y     = (buf[i+3]<<4)| ((buf[i+4]>>4)&0x0f);
@@ -385,8 +417,11 @@ static void ParseControls( hb_work_object_t * w )
     if( pv->pts_start == AV_NOPTS_VALUE )
     {
         // Set pts to end of last sub if the start time is unknown.
-        pv->pts_start = pv->pts;
+        pv->pts_start    = pv->pts;
+        pv->scr_sequence = pv->current_scr_sequence;
     }
+
+    return 0;
 }
 
 /***********************************************************************
@@ -538,9 +573,10 @@ static hb_buffer_t * CropSubtitle( hb_work_object_t * w, uint8_t * raw )
     realheight = crop[1] - crop[0] + 1;
 
     buf = hb_frame_buffer_init( AV_PIX_FMT_YUVA420P, realwidth, realheight );
-    buf->s.frametype = HB_FRAME_SUBTITLE;
-    buf->s.start  = pv->pts_start;
-    buf->s.stop   = pv->pts_stop;
+    buf->s.frametype    = HB_FRAME_SUBTITLE;
+    buf->s.start        = pv->pts_start;
+    buf->s.stop         = pv->pts_stop;
+    buf->s.scr_sequence = pv->scr_sequence;
 
     buf->f.x = pv->x + crop[2];
     buf->f.y = pv->y + crop[0];
@@ -593,7 +629,16 @@ static hb_buffer_t * Decode( hb_work_object_t * w )
     hb_job_t * job = pv->job;
 
     /* Get infos about the subtitle */
-    ParseControls( w );
+    if ( ParseControls( w ) )
+    {
+        /*
+         * Coudln't parse the info
+         */
+        hb_deep_log( 2, "decvobsub: Could not parse info!" );
+
+        hb_buffer_close( &pv->buf );
+        return NULL;
+    }
 
     if( job->indepth_scan || ( w->subtitle->config.force && pv->pts_forced == 0 ) )
     {
@@ -609,8 +654,9 @@ static hb_buffer_t * Decode( hb_work_object_t * w )
 
     if (w->subtitle->config.dest == PASSTHRUSUB)
     {
-        pv->buf->s.start  = pv->pts_start;
-        pv->buf->s.stop   = pv->pts_stop;
+        pv->buf->s.start        = pv->pts_start;
+        pv->buf->s.stop         = pv->pts_stop;
+        pv->buf->s.scr_sequence = pv->scr_sequence;
         buf = pv->buf;
         pv->buf = NULL;
         return buf;

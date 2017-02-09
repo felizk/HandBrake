@@ -13,9 +13,20 @@
 
 #import "HBChapter.h"
 
-#import "HBTitlePrivate.h"
+#import "HBTitle+Private.h"
+#import "HBMutablePreset.h"
 
 @implementation HBJob (HBJobConversion)
+
+- (NSDictionary *)jobDict
+{
+    NSAssert(self.title, @"HBJob: calling jobDict without a valid title loaded");
+
+    HBMutablePreset *preset = [[HBMutablePreset alloc] init];
+    [self writeToPreset:preset];
+
+    return [self.title jobSettingsWithPreset:preset];
+}
 
 /**
  *  Prepares a hb_job_t
@@ -23,12 +34,12 @@
 - (hb_job_t *)hb_job
 {
     NSAssert(self.title, @"HBJob: calling hb_job without a valid title loaded");
-    NSAssert(self.destURL, @"HBJob: calling hb_job without a valid destination");
+    NSAssert(self.completeOutputURL, @"HBJob: calling hb_job without a valid destination");
 
     hb_title_t *title = self.title.hb_title;
     hb_job_t *job = hb_job_init(title);
 
-    hb_job_set_file(job, self.destURL.path.fileSystemRepresentation);
+    hb_job_set_file(job, self.completeOutputURL.path.fileSystemRepresentation);
 
     // Title Angle for dvdnav
     job->angle = self.angle;
@@ -210,7 +221,7 @@
     {
         case 0:
             // ABR
-            job->vquality = -1.0;
+            job->vquality = HB_INVALID_VIDEO_QUALITY;
             job->vbitrate = self.video.avgBitrate;
             break;
         case 1:
@@ -221,7 +232,6 @@
     }
 
     // Map the settings in the dictionaries for the SubtitleList array to match title->list_subtitle
-    BOOL one_burned = NO;
     for (HBSubtitlesTrack *subTrack in self.subtitles.tracks)
     {
         if (subTrack.isEnabled)
@@ -268,7 +278,6 @@
                     }
                     else if (hb_subtitle_can_burn(SRTSUB))
                     {
-                        one_burned = YES;
                         sub_config.dest = RENDERSUB;
                     }
 
@@ -291,7 +300,6 @@
                         }
                         else if (hb_subtitle_can_burn(subt->source))
                         {
-                            one_burned = YES;
                             sub_config.dest = RENDERSUB;
                         }
 
@@ -302,14 +310,6 @@
                 }
             }
         }
-    }
-
-    if (one_burned)
-    {
-        hb_filter_object_t *filter = hb_filter_init( HB_FILTER_RENDER_SUB );
-        hb_add_filter(job, filter, [NSString stringWithFormat:@"%d:%d:%d:%d",
-                                      self.picture.cropTop, self.picture.cropBottom,
-                                      self.picture.cropLeft, self.picture.cropRight].UTF8String);
     }
 
     // Audio Defaults
@@ -356,29 +356,31 @@
     // Now lets add our new tracks to the audio list here
     for (HBAudioTrack *audioTrack in self.audio.tracks)
     {
-        if (audioTrack.enabled)
+        if (audioTrack.isEnabled)
         {
             hb_audio_config_t *audio = (hb_audio_config_t *)calloc(1, sizeof(*audio));
             hb_audio_config_init(audio);
 
-            NSNumber *sampleRateToUse = ([audioTrack.sampleRate[keyAudioSamplerate] intValue] == 0 ?
-                                         audioTrack.track[keyAudioInputSampleRate] :
-                                         audioTrack.sampleRate[keyAudioSamplerate]);
+            NSDictionary *inputTrack = self.audio.sourceTracks[audioTrack.sourceTrackIdx];
 
-            audio->in.track            = [audioTrack.track[keyAudioTrackIndex] intValue] -1;
+            int sampleRateToUse = (audioTrack.sampleRate == 0 ?
+                                   [inputTrack[keyAudioInputSampleRate] intValue] :
+                                   audioTrack.sampleRate);
+
+            audio->in.track = (int)audioTrack.sourceTrackIdx - 1;
 
             // We go ahead and assign values to our audio->out.<properties>
             audio->out.track                     = audio->in.track;
-            audio->out.codec                     = [audioTrack.codec[keyAudioCodec] intValue];
+            audio->out.codec                     = audioTrack.encoder;
             audio->out.compression_level         = hb_audio_compression_get_default(audio->out.codec);
-            audio->out.mixdown                   = [audioTrack.mixdown[keyAudioMixdown] intValue];
+            audio->out.mixdown                   = audioTrack.mixdown;
             audio->out.normalize_mix_level       = 0;
-            audio->out.bitrate                   = [audioTrack.bitRate[keyAudioBitrate] intValue];
-            audio->out.samplerate                = [sampleRateToUse intValue];
+            audio->out.bitrate                   = audioTrack.bitRate;
+            audio->out.samplerate                = sampleRateToUse;
             audio->out.dither_method             = hb_audio_dither_get_default();
 
             // output is not passthru so apply gain
-            if (!([[audioTrack codec][keyAudioCodec] intValue] & HB_ACODEC_PASS_FLAG))
+            if (!(audioTrack.encoder & HB_ACODEC_PASS_FLAG))
             {
                 audio->out.gain = audioTrack.gain;
             }
@@ -388,9 +390,9 @@
                 audio->out.gain = 0;
             }
 
-            if (hb_audio_can_apply_drc([audioTrack.track[keyAudioInputCodec] intValue],
-                                       [audioTrack.track[keyAudioInputCodecParam] intValue],
-                                       [audioTrack.codec[keyAudioCodec] intValue]))
+            if (hb_audio_can_apply_drc([inputTrack[keyAudioInputCodec] intValue],
+                                       [inputTrack[keyAudioInputCodecParam] intValue],
+                                       audioTrack.encoder))
             {
                 audio->out.dynamic_range_compression = audioTrack.drc;
             }
@@ -413,11 +415,26 @@
     if (![self.filters.detelecine isEqualToString:@"off"])
     {
         int filter_id = HB_FILTER_DETELECINE;
-        const char *filter_str = hb_generate_filter_settings(filter_id,
+        hb_dict_t *filter_dict = hb_generate_filter_settings(filter_id,
                                                              self.filters.detelecine.UTF8String,
+                                                             NULL,
                                                              self.filters.detelecineCustomString.UTF8String);
         filter = hb_filter_init(filter_id);
-        hb_add_filter(job, filter, filter_str);
+        hb_add_filter_dict(job, filter, filter_dict);
+        hb_value_free(&filter_dict);
+    }
+
+    // Comb Detection
+    if (![self.filters.combDetection isEqualToString:@"off"])
+    {
+        int filter_id = HB_FILTER_COMB_DETECT;
+        hb_dict_t *filter_dict = hb_generate_filter_settings(filter_id,
+                                                             self.filters.combDetection.UTF8String,
+                                                             NULL,
+                                                             self.filters.combDetectionCustomString.UTF8String);
+        filter = hb_filter_init(filter_id);
+        hb_add_filter_dict(job, filter, filter_dict);
+        hb_value_free(&filter_dict);
     }
 
     // Deinterlace
@@ -429,11 +446,13 @@
             filter_id = HB_FILTER_DEINTERLACE;
         }
 
-        const char *filter_str = hb_generate_filter_settings(filter_id,
-                                                             self.filters.deinterlacePreset.UTF8String,
-                                                             self.filters.deinterlaceCustomString.UTF8String);
+        hb_dict_t *filter_dict = hb_generate_filter_settings(filter_id,
+                                                            self.filters.deinterlacePreset.UTF8String,
+                                                            NULL,
+                                                            self.filters.deinterlaceCustomString.UTF8String);
         filter = hb_filter_init(filter_id);
-        hb_add_filter(job, filter, filter_str);
+        hb_add_filter_dict(job, filter, filter_dict);
+        hb_value_free(&filter_dict);
     }
 
     // Denoise
@@ -441,40 +460,35 @@
     {
         int filter_id = HB_FILTER_HQDN3D;
         if ([self.filters.denoise isEqualToString:@"nlmeans"])
+        {
             filter_id = HB_FILTER_NLMEANS;
+        }
 
-        if ([self.filters.denoisePreset isEqualToString:@"custom"])
-        {
-            const char *filter_str;
-            filter_str = self.filters.denoiseCustomString.UTF8String;
-            filter = hb_filter_init(filter_id);
-            hb_add_filter(job, filter, filter_str);
-        }
-        else
-        {
-            const char *filter_str, *preset, *tune;
-            preset = self.filters.denoisePreset.UTF8String;
-            tune = self.filters.denoiseTune.UTF8String;
-            filter_str = hb_generate_filter_settings(filter_id, preset, tune);
-            filter = hb_filter_init(filter_id);
-            hb_add_filter(job, filter, filter_str);
-        }
+        hb_dict_t *filter_dict = hb_generate_filter_settings(filter_id,
+                                                  self.filters.denoisePreset.UTF8String,
+                                                  self.filters.denoiseTune.UTF8String,
+                                                  self.filters.denoiseCustomString.UTF8String);
+        filter = hb_filter_init(filter_id);
+        hb_add_filter_dict(job, filter, filter_dict);
+        hb_dict_free(&filter_dict);
     }
 
     // Deblock (uses pp7 default)
     if (self.filters.deblock)
     {
         filter = hb_filter_init(HB_FILTER_DEBLOCK);
-        hb_add_filter(job, filter, [NSString stringWithFormat:@"%d", self.filters.deblock].UTF8String);
+        hb_add_filter(job, filter, [NSString stringWithFormat:@"qp=%d", self.filters.deblock].UTF8String);
     }
 
     // Add Crop/Scale filter
     filter = hb_filter_init(HB_FILTER_CROP_SCALE);
-    hb_add_filter( job, filter, [NSString stringWithFormat:@"%d:%d:%d:%d:%d:%d",
-                                 self.picture.width, self.picture.height,
-                                 self.picture.cropTop, self.picture.cropBottom,
-                                 self.picture.cropLeft, self.picture.cropRight].UTF8String);
-    
+    hb_add_filter( job, filter,
+                   [NSString stringWithFormat:
+                    @"width=%d:height=%d:crop-top=%d:crop-bottom=%d:crop-left=%d:crop-right=%d",
+                    self.picture.width, self.picture.height,
+                    self.picture.cropTop, self.picture.cropBottom,
+                    self.picture.cropLeft, self.picture.cropRight].UTF8String);
+
     // Add grayscale filter
     if (self.filters.grayscale)
     {
@@ -482,9 +496,22 @@
         hb_add_filter(job, filter, NULL);
     }
 
+    // Add rotate filter
+    if (self.filters.rotate || self.filters.flip)
+    {
+        int filter_id = HB_FILTER_ROTATE;
+        hb_dict_t *filter_dict = hb_generate_filter_settings(filter_id,
+                                                             NULL, NULL,
+                                                             [NSString stringWithFormat:@"angle=%d:hflip=%d", self.filters.rotate, self.filters.flip].UTF8String);
+
+        filter = hb_filter_init(filter_id);
+        hb_add_filter_dict(job, filter, filter_dict);
+        hb_dict_free(&filter_dict);
+    }
+
     // Add framerate shaping filter
     filter = hb_filter_init(HB_FILTER_VFR);
-    hb_add_filter(job, filter, [[NSString stringWithFormat:@"%d:%d:%d",
+    hb_add_filter(job, filter, [[NSString stringWithFormat:@"mode=%d:rate=%d/%d",
                                  fps_mode, fps_num, fps_den] UTF8String]);
     
     return job;

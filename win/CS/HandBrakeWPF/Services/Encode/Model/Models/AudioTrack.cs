@@ -20,6 +20,7 @@ namespace HandBrakeWPF.Services.Encode.Model.Models
     using HandBrake.ApplicationServices.Interop.Model.Encoding;
     using HandBrake.ApplicationServices.Utilities;
 
+    using HandBrakeWPF.Model.Audio;
     using HandBrakeWPF.Services.Scan.Model;
     using HandBrakeWPF.Utilities;
 
@@ -34,7 +35,7 @@ namespace HandBrakeWPF.Services.Encode.Model.Models
         private double drc;
         private HandBrakeWPF.Services.Encode.Model.Models.AudioEncoder encoder;
         private int gain;
-        private Mixdown mixDown;
+        private string mixDown;
         private double sampleRate;
         [NonSerialized]
         [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -52,7 +53,7 @@ namespace HandBrakeWPF.Services.Encode.Model.Models
         {
             // Default Values
             this.Encoder = HandBrakeWPF.Services.Encode.Model.Models.AudioEncoder.ffaac;
-            this.MixDown = Mixdown.DolbyProLogicII;
+            this.MixDown = HandBrakeEncoderHelpers.Mixdowns.FirstOrDefault(m => m.ShortName == "dpl2")?.ShortName;
             this.SampleRate = 48;
             this.Bitrate = 160;
             this.DRC = 0;
@@ -91,6 +92,28 @@ namespace HandBrakeWPF.Services.Encode.Model.Models
 
             // Setup Backing Properties
             this.encoderRateType = track.EncoderRateType;
+            this.SetupLimits();
+        }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="AudioTrack"/> class. 
+        /// Create a track from a behaviour track.
+        /// </summary>
+        /// <param name="track">
+        /// The Behavior track
+        /// </param>
+        public AudioTrack(AudioBehaviourTrack track)
+        {     
+            this.drc = track.DRC;
+            this.encoder = track.Encoder;
+            this.gain = track.Gain;
+            this.mixDown = track.MixDown != null ? track.MixDown.ShortName : "dpl2";
+            this.sampleRate = track.SampleRate;
+            this.scannedTrack = new Audio();
+            this.encoderRateType = track.EncoderRateType;
+            this.quality = track.Quality;
+            this.bitrate = track.Bitrate;
+
             this.SetupLimits();
         }
 
@@ -137,28 +160,30 @@ namespace HandBrakeWPF.Services.Encode.Model.Models
         }
 
         /// <summary>
-        ///   Gets or sets Audio Mixdown
+        ///   Gets or sets Audio Mixdown (ShortName)
         /// </summary>
-        public Mixdown MixDown
+        public string MixDown
         {
             get
             {
-                return this.IsPassthru ? Mixdown.Auto : this.mixDown;
+                return this.IsPassthru ? null : this.mixDown;
             }
 
             set
             {
-                this.mixDown = value;
-                this.NotifyOfPropertyChange(() => this.MixDown);
-                this.SetupLimits();
-                this.NotifyOfPropertyChange(() => this.TrackReference);
+                if (!object.Equals(this.mixDown, value))
+                {
+                    this.mixDown = value;
+                    this.NotifyOfPropertyChange(() => this.MixDown);
+                    this.SetupLimits();
+                }
             }
         }
 
         /// <summary>
         ///   Gets or sets Audio Encoder
         /// </summary>
-        public HandBrakeWPF.Services.Encode.Model.Models.AudioEncoder Encoder
+        public AudioEncoder Encoder
         {
             get
             {
@@ -167,14 +192,20 @@ namespace HandBrakeWPF.Services.Encode.Model.Models
 
             set
             {
+                if (object.Equals(this.encoder, value))
+                {
+                    return;
+                }
+
                 this.encoder = value;
                 this.NotifyOfPropertyChange(() => this.Encoder);
                 this.NotifyOfPropertyChange(() => this.IsPassthru);
                 this.NotifyOfPropertyChange(() => this.IsBitrateVisible);
                 this.NotifyOfPropertyChange(() => this.IsQualityVisible);
                 this.NotifyOfPropertyChange(() => this.IsRateTypeVisible);
-                this.SetupLimits();
                 this.NotifyOfPropertyChange(() => this.TrackReference);
+                this.GetDefaultMixdownIfNull();
+                this.SetupLimits();
 
                 // Refresh the available encoder rate types.
                 this.NotifyOfPropertyChange(() => this.AudioEncoderRateTypes);
@@ -200,14 +231,13 @@ namespace HandBrakeWPF.Services.Encode.Model.Models
                 this.sampleRate = value;
                 this.NotifyOfPropertyChange(() => this.SampleRate);
                 this.SetupLimits();
-                this.NotifyOfPropertyChange(() => this.TrackReference);
             }
         }
 
         /// <summary>
         /// Gets or sets the encoder rate type.
         /// </summary>
-        public HandBrakeWPF.Services.Encode.Model.Models.AudioEncoderRateType EncoderRateType
+        public AudioEncoderRateType EncoderRateType
         {
             get
             {
@@ -279,18 +309,6 @@ namespace HandBrakeWPF.Services.Encode.Model.Models
             get
             {
                 return EnumHelper<HandBrakeWPF.Services.Encode.Model.Models.AudioEncoder>.GetDisplay(this.Encoder);
-            }
-        }
-
-        /// <summary>
-        ///   Gets AudioMixdownDisplayValue.
-        /// </summary>
-        [JsonIgnore]
-        public string AudioMixdownDisplayValue
-        {
-            get
-            {
-                return EnumHelper<Mixdown>.GetDisplay(this.MixDown);
             }
         }
 
@@ -369,6 +387,9 @@ namespace HandBrakeWPF.Services.Encode.Model.Models
             {
                 this.scannedTrack = value;
                 this.NotifyOfPropertyChange(() => this.ScannedTrack);
+                this.NotifyOfPropertyChange(() => this.TrackReference);
+
+                this.GetDefaultMixdownIfNull();
             }
         }
 
@@ -437,7 +458,7 @@ namespace HandBrakeWPF.Services.Encode.Model.Models
         /// Gets the audio encoder rate types.
         /// </summary>
         [JsonIgnore]
-        public IEnumerable<HandBrakeWPF.Services.Encode.Model.Models.AudioEncoderRateType> AudioEncoderRateTypes
+        public IEnumerable<AudioEncoderRateType> AudioEncoderRateTypes
         {
             get
             {
@@ -550,7 +571,7 @@ namespace HandBrakeWPF.Services.Encode.Model.Models
             // Based on the users settings, find the high and low bitrates.
             HBAudioEncoder hbaenc = HandBrakeEncoderHelpers.GetAudioEncoder(EnumHelper<HandBrakeWPF.Services.Encode.Model.Models.AudioEncoder>.GetShortName(this.Encoder));
             HBRate rate = HandBrakeEncoderHelpers.AudioSampleRates.FirstOrDefault(t => t.Name == this.SampleRate.ToString(CultureInfo.InvariantCulture));
-            HBMixdown mixdown = HandBrakeEncoderHelpers.GetMixdown(EnumHelper<Mixdown>.GetShortName(this.MixDown));
+            HBMixdown mixdown = this.mixDown != null ? HandBrakeEncoderHelpers.GetMixdown(this.mixDown) : HandBrakeEncoderHelpers.GetMixdown("dpl2");
 
             BitrateLimits limits = HandBrakeEncoderHelpers.GetBitrateLimits(hbaenc, rate != null ? rate.Rate : 48000, mixdown);
             if (limits != null)
@@ -630,6 +651,31 @@ namespace HandBrakeWPF.Services.Encode.Model.Models
             }
 
             this.NotifyOfPropertyChange(() => this.EncoderQualityValues);
+        }
+
+        /// <summary>
+        /// Set the default mixdown when the mixdown is null or "none"
+        /// </summary>
+        private void GetDefaultMixdownIfNull()
+        {
+            if (this.ScannedTrack == null)
+            {
+                return;
+            }
+
+            HBAudioEncoder aencoder = HandBrakeEncoderHelpers.GetAudioEncoder(EnumHelper<AudioEncoder>.GetShortName(this.encoder));
+            HBMixdown currentMixdown = HandBrakeEncoderHelpers.GetMixdown(this.mixDown);
+            HBMixdown sanitisedMixdown = HandBrakeEncoderHelpers.SanitizeMixdown(currentMixdown, aencoder, (uint)this.ScannedTrack.ChannelLayout);
+            HBMixdown defaultMixdown = HandBrakeEncoderHelpers.GetDefaultMixdown(aencoder, (uint)this.ScannedTrack.ChannelLayout);
+
+            if (this.mixDown == null || this.mixDown == "none")
+            {
+                this.MixDown = defaultMixdown.ShortName;
+            }
+            else if (sanitisedMixdown != null)
+            {
+                this.MixDown = sanitisedMixdown.ShortName;
+            }
         }
 
         #endregion

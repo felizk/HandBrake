@@ -14,8 +14,6 @@ namespace HandBrakeWPF.Startup
 
     using Caliburn.Micro;
 
-    using HandBrakeWPF.Commands;
-    using HandBrakeWPF.Commands.Interfaces;
     using HandBrakeWPF.Services;
     using HandBrakeWPF.Services.Interfaces;
     using HandBrakeWPF.Services.Presets;
@@ -65,7 +63,6 @@ namespace HandBrakeWPF.Startup
             this.container.Singleton<IQueueProcessor, QueueProcessor>();
 
             // Commands
-            this.container.Singleton<IAdvancedEncoderOptionsCommand, AdvancedEncoderOptionsCommand>();
 
             // Services and Shell Components
             this.container.Singleton<IErrorService, ErrorService>();
@@ -73,6 +70,7 @@ namespace HandBrakeWPF.Startup
             this.container.Singleton<IMainViewModel, MainViewModel>();
             this.container.Singleton<IQueueViewModel, QueueViewModel>();
             this.container.PerRequest<IAddPresetViewModel, AddPresetViewModel>();
+            this.container.PerRequest<IManagePresetViewModel, ManagePresetViewModel>();
             this.container.Singleton<ILogViewModel, LogViewModel>();
             this.container.Singleton<IAboutViewModel, AboutViewModel>();
             this.container.Singleton<IOptionsViewModel, OptionsViewModel>();
@@ -85,12 +83,12 @@ namespace HandBrakeWPF.Startup
             // Tab Components
             this.container.Singleton<IAudioViewModel, AudioViewModel>();
             this.container.Singleton<IX264ViewModel, X264ViewModel>();
-            this.container.Singleton<IAdvancedViewModel, AdvancedViewModel>();
             this.container.Singleton<IPictureSettingsViewModel, PictureSettingsViewModel>();
             this.container.Singleton<IChaptersViewModel, ChaptersViewModel>();
             this.container.Singleton<ISubtitlesViewModel, SubtitlesViewModel>();
             this.container.Singleton<IFiltersViewModel, FiltersViewModel>();
             this.container.Singleton<IVideoViewModel, VideoViewModel>();
+            this.container.Singleton<IMetaDataViewModel, MetaDataViewModel>();
 
             // Shell
             this.container.Singleton<IShellViewModel, ShellViewModel>();

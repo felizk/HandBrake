@@ -1,7 +1,7 @@
 /* -*- Mode: C; indent-tabs-mode: t; c-basic-offset: 4; tab-width: 4 -*- */
 /*
  * settings.c
- * Copyright (C) John Stebbins 2008-2016 <stebbins@stebbins>
+ * Copyright (C) John Stebbins 2008-2017 <stebbins@stebbins>
  *
  * settings.c is free software.
  *
@@ -58,6 +58,27 @@ gchar*
 ghb_settings_combo_option(const GhbValue *settings, const gchar *key)
 {
     return ghb_lookup_combo_option(key, ghb_dict_get_value(settings, key));
+}
+
+GhbValue *ghb_get_title_settings(GhbValue *settings)
+{
+    GhbValue *title;
+    title = ghb_dict_get(settings, "Title");
+    return title;
+}
+
+GhbValue *ghb_get_title_audio_list(GhbValue *settings)
+{
+    GhbValue *title_dict = ghb_get_title_settings(settings);
+    GhbValue *audio_list = ghb_dict_get(title_dict, "AudioList");
+    return audio_list;
+}
+
+GhbValue *ghb_get_title_subtitle_list(GhbValue *settings)
+{
+    GhbValue *title_dict = ghb_get_title_settings(settings);
+    GhbValue *subtitle_list = ghb_dict_get(title_dict, "SubtitleList");
+    return subtitle_list;
 }
 
 GhbValue *ghb_get_job_settings(GhbValue *settings)
@@ -422,7 +443,7 @@ ghb_widget_value(GtkWidget *widget)
     }
     else
     {
-        g_warning("Attempt to set unknown widget type: %s\n", name);
+        g_warning("Attempt to get unknown widget type, name %s", name);
         g_free(value);
         value = NULL;
     }
@@ -514,7 +535,7 @@ ghb_widget_to_setting(GhbValue *settings, GtkWidget *widget)
 void
 ghb_update_widget(GtkWidget *widget, const GhbValue *value)
 {
-    GhbType type;
+    GType type;
     gchar *str, *tmp;
     gint ival;
     gdouble dval;
@@ -687,7 +708,7 @@ ghb_update_widget(GtkWidget *widget, const GhbValue *value)
     }
     else
     {
-        g_warning("Attempt to set unknown widget type %s", name);
+        g_warning("Attempt to set unknown widget type, name %s", name);
     }
     g_free(tmp);
 }

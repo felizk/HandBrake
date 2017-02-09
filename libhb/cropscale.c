@@ -1,6 +1,6 @@
 /* cropscale.c
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -23,10 +23,7 @@ struct hb_filter_private_s
     int                 height_out;
     int                 crop[4];
     
-    /* OpenCL/DXVA2 */
-    int                 use_dxva;
-    int                 use_decomb;
-    int                 use_detelecine;
+    /* OpenCL */
     hb_oclscale_t      *os; //ocl scaler handler
 
     struct SwsContext * context;
@@ -39,21 +36,26 @@ static int hb_crop_scale_work( hb_filter_object_t * filter,
                                hb_buffer_t ** buf_in,
                                hb_buffer_t ** buf_out );
 
-static int hb_crop_scale_info( hb_filter_object_t * filter,
-                               hb_filter_info_t * info );
+static hb_filter_info_t * hb_crop_scale_info( hb_filter_object_t * filter );
 
 static void hb_crop_scale_close( hb_filter_object_t * filter );
 
+static const char crop_scale_template[] =
+    "width=^"HB_INT_REG"$:height=^"HB_INT_REG"$:"
+    "crop-top=^"HB_INT_REG"$:crop-bottom=^"HB_INT_REG"$:"
+    "crop-left=^"HB_INT_REG"$:crop-right=^"HB_INT_REG"$";
+
 hb_filter_object_t hb_filter_crop_scale =
 {
-    .id            = HB_FILTER_CROP_SCALE,
-    .enforce_order = 1,
-    .name          = "Crop and Scale",
-    .settings      = NULL,
-    .init          = hb_crop_scale_init,
-    .work          = hb_crop_scale_work,
-    .close         = hb_crop_scale_close,
-    .info          = hb_crop_scale_info,
+    .id                = HB_FILTER_CROP_SCALE,
+    .enforce_order     = 1,
+    .name              = "Crop and Scale",
+    .settings          = NULL,
+    .init              = hb_crop_scale_init,
+    .work              = hb_crop_scale_work,
+    .close             = hb_crop_scale_close,
+    .info              = hb_crop_scale_info,
+    .settings_template = crop_scale_template,
 };
 
 static int hb_crop_scale_init( hb_filter_object_t * filter,
@@ -70,11 +72,7 @@ static int hb_crop_scale_init( hb_filter_object_t * filter,
     pv->width_out = init->geometry.width - (init->crop[2] + init->crop[3]);
     pv->height_out = init->geometry.height - (init->crop[0] + init->crop[1]);
 
-    /* OpenCL/DXVA2 */
-    pv->use_dxva       = hb_hwd_enabled(init->job->h);
-    pv->use_decomb     = init->job->use_decomb;
-    pv->use_detelecine = init->job->use_detelecine;
-
+    /* OpenCL */
     if (pv->job->use_opencl && pv->job->title->opencl_support)
     {
         pv->os = ( hb_oclscale_t * )malloc( sizeof( hb_oclscale_t ) );
@@ -82,12 +80,13 @@ static int hb_crop_scale_init( hb_filter_object_t * filter,
     }
 
     memcpy( pv->crop, init->crop, sizeof( int[4] ) );
-    if( filter->settings )
-    {
-        sscanf( filter->settings, "%d:%d:%d:%d:%d:%d",
-                &pv->width_out, &pv->height_out,
-                &pv->crop[0], &pv->crop[1], &pv->crop[2], &pv->crop[3] );
-    }
+    hb_dict_extract_int(&pv->width_out, filter->settings, "width");
+    hb_dict_extract_int(&pv->height_out, filter->settings, "height");
+    hb_dict_extract_int(&pv->crop[0], filter->settings, "crop-top");
+    hb_dict_extract_int(&pv->crop[1], filter->settings, "crop-bottom");
+    hb_dict_extract_int(&pv->crop[2], filter->settings, "crop-left");
+    hb_dict_extract_int(&pv->crop[3], filter->settings, "crop-right");
+
     // Set init values so the next stage in the pipline
     // knows what it will be getting
     init->pix_fmt = pv->pix_fmt;
@@ -98,17 +97,18 @@ static int hb_crop_scale_init( hb_filter_object_t * filter,
     return 0;
 }
 
-static int hb_crop_scale_info( hb_filter_object_t * filter,
-                               hb_filter_info_t * info )
+static hb_filter_info_t * hb_crop_scale_info( hb_filter_object_t * filter )
 {
     hb_filter_private_t * pv = filter->private_data;
+    hb_filter_info_t    * info;
 
     if( !pv )
-        return 0;
+        return NULL;
 
-    // Set init values so the next stage in the pipline
-    // knows what it will be getting
-    memset( info, 0, sizeof( hb_filter_info_t ) );
+    info = calloc(1, sizeof(hb_filter_info_t));
+    info->human_readable_desc = malloc(128);
+    info->human_readable_desc[0] = 0;
+
     info->out.pix_fmt = pv->pix_fmt;
     info->out.geometry.width = pv->width_out;
     info->out.geometry.height = pv->height_out;
@@ -117,13 +117,13 @@ static int hb_crop_scale_info( hb_filter_object_t * filter,
     int cropped_width = pv->width_in - ( pv->crop[2] + pv->crop[3] );
     int cropped_height = pv->height_in - ( pv->crop[0] + pv->crop[1] );
 
-    sprintf( info->human_readable_desc, 
+    snprintf( info->human_readable_desc, 128,
         "source: %d * %d, crop (%d/%d/%d/%d): %d * %d, scale: %d * %d",
         pv->width_in, pv->height_in,
         pv->crop[0], pv->crop[1], pv->crop[2], pv->crop[3],
         cropped_width, cropped_height, pv->width_out, pv->height_out );
 
-    return 0;
+    return info;
 }
 
 static void hb_crop_scale_close( hb_filter_object_t * filter )
@@ -194,7 +194,8 @@ static hb_buffer_t* crop_scale( hb_filter_private_t * pv, hb_buffer_t * in )
                                 in->f.width  - (pv->crop[2] + pv->crop[3]),
                                 in->f.height - (pv->crop[0] + pv->crop[1]),
                                 in->f.fmt, out->f.width, out->f.height,
-                                out->f.fmt, SWS_LANCZOS|SWS_ACCURATE_RND);
+                                out->f.fmt, SWS_LANCZOS|SWS_ACCURATE_RND,
+                                hb_ff_get_colorspace(pv->job->title->color_matrix));
             pv->width_in  = in->f.width;
             pv->height_in = in->f.height;
             pv->pix_fmt   = in->f.fmt;
@@ -246,13 +247,9 @@ static int hb_crop_scale_work( hb_filter_object_t * filter,
         pv->height_out = in->f.height - (pv->crop[0] + pv->crop[1]);
     }
 
-    /* OpenCL/DXVA2 */
-    if ((!pv->use_dxva &&
-         !pv->crop[0] && !pv->crop[1] && !pv->crop[2] && !pv->crop[3] &&
-         in->f.fmt == pv->pix_fmt_out && in->f.width == pv->width_out &&
-         in->f.height == pv->height_out) ||
-        (pv->use_dxva && !pv->use_decomb && !pv->use_detelecine &&
-         in->f.width  == pv->width_out && in->f.height == pv->height_out))
+    if (!pv->crop[0] && !pv->crop[1] && !pv->crop[2] && !pv->crop[3] &&
+        in->f.fmt == pv->pix_fmt_out && in->f.width == pv->width_out &&
+        in->f.height == pv->height_out)
     {
         *buf_out = in;
         *buf_in  = NULL;

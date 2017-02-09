@@ -15,6 +15,7 @@ namespace HandBrakeWPF.Services.Encode.Model
     using HandBrake.ApplicationServices.Interop.Model;
     using HandBrake.ApplicationServices.Interop.Model.Encoding;
 
+    using HandBrakeWPF.Services.Encode.Model.Models;
     using HandBrakeWPF.Utilities;
 
     using AllowedPassthru = HandBrakeWPF.Services.Encode.Model.Models.AllowedPassthru;
@@ -56,6 +57,7 @@ namespace HandBrakeWPF.Services.Encode.Model
             this.ChapterNames = new ObservableCollection<ChapterMarker>();
             this.AllowedPassthruOptions = new AllowedPassthru();
             this.Modulus = 16;
+            this.MetaData = new MetaData();
 
             this.VideoTunes = new List<VideoTune>();
         }
@@ -92,6 +94,8 @@ namespace HandBrakeWPF.Services.Encode.Model
             this.CustomDeinterlace = task.CustomDeinterlace;
             this.CustomDenoise = task.CustomDenoise;
             this.CustomDetelecine = task.CustomDetelecine;
+            this.CustomCombDetect = task.CustomCombDetect;
+            this.CombDetect = task.CombDetect;
             this.Deblock = task.Deblock;
             this.Decomb = task.Decomb;
             this.Deinterlace = task.Deinterlace;
@@ -101,6 +105,9 @@ namespace HandBrakeWPF.Services.Encode.Model
             this.DenoiseTune = task.DenoiseTune;
             this.Destination = task.Destination;
             this.Detelecine = task.Detelecine;
+            this.FlipVideo = task.FlipVideo;
+            this.Rotation = task.Rotation;
+
             this.DisplayWidth = task.DisplayWidth;
             this.EndPoint = task.EndPoint;
             this.Framerate = task.Framerate;
@@ -142,6 +149,8 @@ namespace HandBrakeWPF.Services.Encode.Model
             this.VideoPreset = task.VideoPreset;
             this.VideoTunes = new List<VideoTune>(task.VideoTunes);
             this.ExtraAdvancedArguments = task.ExtraAdvancedArguments;
+
+            this.MetaData = new MetaData(task.MetaData);
 
             this.ShowAdvancedTab = task.ShowAdvancedTab;
         }
@@ -295,9 +304,19 @@ namespace HandBrakeWPF.Services.Encode.Model
         public Decomb Decomb { get; set; }
 
         /// <summary>
+        /// Gets or sets the comb detect.
+        /// </summary>
+        public CombDetect CombDetect { get; set; }
+
+        /// <summary>
         /// Gets or sets CustomDecomb.
         /// </summary>
         public string CustomDecomb { get; set; }
+
+        /// <summary>
+        /// Gets or sets the custom comb detect.
+        /// </summary>
+        public string CustomCombDetect { get; set; }
 
         /// <summary>
         /// Gets or sets Detelecine.
@@ -339,6 +358,15 @@ namespace HandBrakeWPF.Services.Encode.Model
         /// </summary>
         public bool Grayscale { get; set; }
 
+        /// <summary>
+        /// Rotate the Video by x Degrees
+        /// </summary>
+        public int Rotation { get; set; }
+
+        /// <summary>
+        /// Flip the video.
+        /// </summary>
+        public bool FlipVideo { get; set; }
         #endregion
 
         #region Video
@@ -479,6 +507,14 @@ namespace HandBrakeWPF.Services.Encode.Model
             }
         }
 
+        #endregion
+
+        #region MetaData
+
+        /// <summary>
+        /// Gets or sets the meta data.
+        /// </summary>
+        public MetaData MetaData { get; set; }
         #endregion
 
         #region Preview

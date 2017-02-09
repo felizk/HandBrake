@@ -40,6 +40,11 @@ namespace HandBrakeWPF
         public const string Any = "(Any)";
 
         /// <summary>
+        /// Undefined Language
+        /// </summary>
+        public const string Undefined = "und";
+
+        /// <summary>
         /// The chapters.
         /// </summary>
         public const string Chapters = "{chapters}";
@@ -68,6 +73,11 @@ namespace HandBrakeWPF
         /// The bitrate.
         /// </summary>
         public const string Bitrate = "{bitrate}";
+
+        /// <summary>
+        /// The preset.
+        /// </summary>
+        public const string Preset = "{preset}";
 
         /// <summary>
         /// Preset Major Version

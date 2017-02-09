@@ -18,15 +18,16 @@ namespace HandBrakeWPF.ViewModels
     using System.Linq;
     using System.Threading;
     using System.Windows;
+    using System.Windows.Input;
 
     using Caliburn.Micro;
 
     using HandBrake.ApplicationServices.Interop;
-    using HandBrake.ApplicationServices.Interop.Json.State;
     using HandBrake.ApplicationServices.Interop.Model.Encoding;
     using HandBrake.ApplicationServices.Utilities;
 
     using HandBrakeWPF.Commands;
+    using HandBrakeWPF.Commands.Menu;
     using HandBrakeWPF.EventArgs;
     using HandBrakeWPF.Factories;
     using HandBrakeWPF.Helpers;
@@ -48,6 +49,7 @@ namespace HandBrakeWPF.ViewModels
     using HandBrakeWPF.Services.Scan.EventArgs;
     using HandBrakeWPF.Services.Scan.Interfaces;
     using HandBrakeWPF.Services.Scan.Model;
+    using HandBrakeWPF.Startup;
     using HandBrakeWPF.Utilities;
     using HandBrakeWPF.ViewModels.Interfaces;
     using HandBrakeWPF.Views;
@@ -59,7 +61,14 @@ namespace HandBrakeWPF.ViewModels
     using Ookii.Dialogs.Wpf;
 
     using Action = System.Action;
+    using Application = System.Windows.Application;
+    using DataFormats = System.Windows.DataFormats;
+    using DragEventArgs = System.Windows.DragEventArgs;
     using Execute = Caliburn.Micro.Execute;
+    using LogManager = HandBrakeWPF.Helpers.LogManager;
+    using MessageBox = System.Windows.MessageBox;
+    using OpenFileDialog = Microsoft.Win32.OpenFileDialog;
+    using SaveFileDialog = Microsoft.Win32.SaveFileDialog;
 
     /// <summary>
     /// HandBrakes Main Window
@@ -158,12 +167,15 @@ namespace HandBrakeWPF.ViewModels
         /// <param name="queueViewModel">
         /// The queue View Model.
         /// </param>
+        /// <param name="metaDataViewModel">
+        /// The Meta Data View Model
+        /// </param>
         public MainViewModel(IUserSettingService userSettingService, IScan scanService, IEncode encodeService, IPresetService presetService, 
             IErrorService errorService, IUpdateService updateService, 
             IPrePostActionService whenDoneService, IWindowManager windowManager, IPictureSettingsViewModel pictureSettingsViewModel, IVideoViewModel videoViewModel, 
-            IFiltersViewModel filtersViewModel, IAudioViewModel audioViewModel, ISubtitlesViewModel subtitlesViewModel, 
-            IAdvancedViewModel advancedViewModel, IChaptersViewModel chaptersViewModel, IStaticPreviewViewModel staticPreviewViewModel,
-            IQueueViewModel queueViewModel)
+            IFiltersViewModel filtersViewModel, IAudioViewModel audioViewModel, ISubtitlesViewModel subtitlesViewModel,
+            IX264ViewModel advancedViewModel, IChaptersViewModel chaptersViewModel, IStaticPreviewViewModel staticPreviewViewModel,
+            IQueueViewModel queueViewModel, IMetaDataViewModel metaDataViewModel)
         {
             this.scanService = scanService;
             this.encodeService = encodeService;
@@ -177,6 +189,7 @@ namespace HandBrakeWPF.ViewModels
 
             this.PictureSettingsViewModel = pictureSettingsViewModel;
             this.VideoViewModel = videoViewModel;
+            this.MetaDataViewModel = metaDataViewModel;
             this.FiltersViewModel = filtersViewModel;
             this.AudioViewModel = audioViewModel;
             this.SubtitleViewModel = subtitlesViewModel;
@@ -227,6 +240,10 @@ namespace HandBrakeWPF.ViewModels
                     break;
             }
 
+            // Setup Commands
+            this.QueueCommand = new QueueCommands(this.QueueViewModel);
+
+            LogManager.Init();
             HandBrakeInstanceManager.Init();
         }
 
@@ -255,7 +272,7 @@ namespace HandBrakeWPF.ViewModels
         /// <summary>
         /// Gets or sets AdvancedViewModel.
         /// </summary>
-        public IAdvancedViewModel AdvancedViewModel { get; set; }
+        public IX264ViewModel AdvancedViewModel { get; set; }
 
         /// <summary>
         /// Gets or sets VideoViewModel.
@@ -276,6 +293,11 @@ namespace HandBrakeWPF.ViewModels
         /// Gets or sets the static preview view model.
         /// </summary>
         public IStaticPreviewViewModel StaticPreviewViewModel { get; set; }
+
+        /// <summary>
+        /// Gets or sets the The MetaData View Model
+        /// </summary>
+        public IMetaDataViewModel MetaDataViewModel { get; set; }
 
         #endregion
 
@@ -363,8 +385,8 @@ namespace HandBrakeWPF.ViewModels
                 if (this.SelectedPreset != null)
                 {
                     // Main Window Settings
-                    this.CurrentTask.OptimizeMP4 = selectedPreset.Task.OptimizeMP4;
-                    this.CurrentTask.IPod5GSupport = selectedPreset.Task.IPod5GSupport;
+                    this.OptimizeMP4 = selectedPreset.Task.OptimizeMP4;
+                    this.IPod5GSupport = selectedPreset.Task.IPod5GSupport;
                     this.SelectedOutputFormat = selectedPreset.Task.OutputFormat;
 
                     // Tab Settings
@@ -375,12 +397,53 @@ namespace HandBrakeWPF.ViewModels
                     this.SubtitleViewModel.SetPreset(this.SelectedPreset, this.CurrentTask);
                     this.ChaptersViewModel.SetPreset(this.SelectedPreset, this.CurrentTask);
                     this.AdvancedViewModel.SetPreset(this.SelectedPreset, this.CurrentTask);
+                    this.MetaDataViewModel.SetPreset(this.SelectedPreset, this.CurrentTask);
 
                     // Do this again to force an update for m4v/mp4 selection
                     this.SelectedOutputFormat = selectedPreset.Task.OutputFormat;
                 }
 
                 this.NotifyOfPropertyChange(() => this.SelectedPreset);
+            }
+        }
+
+        /// <summary>
+        /// Optimise MP4 Checkbox
+        /// </summary>
+        public bool OptimizeMP4
+        {
+            get
+            {
+                return this.CurrentTask.OptimizeMP4;
+            }
+            set
+            {
+                if (value == this.CurrentTask.OptimizeMP4)
+                {
+                    return;
+                }
+                this.CurrentTask.OptimizeMP4 = value;
+                this.NotifyOfPropertyChange(() => this.OptimizeMP4);
+            }
+        }
+
+        /// <summary>
+        /// iPod 5G Status
+        /// </summary>
+        public bool IPod5GSupport
+        {
+            get
+            {
+                return this.CurrentTask.IPod5GSupport;
+            }
+            set
+            {
+                if (value == this.CurrentTask.IPod5GSupport)
+                {
+                    return;
+                }
+                this.CurrentTask.IPod5GSupport = value;
+                this.NotifyOfPropertyChange(() => this.IPod5GSupport);
             }
         }
 
@@ -647,20 +710,26 @@ namespace HandBrakeWPF.ViewModels
             {
                 if (!Equals(this.CurrentTask.Destination, value))
                 {
-                    this.CurrentTask.Destination = value;
-                    this.NotifyOfPropertyChange(() => this.Destination);
-
-                    if (!string.IsNullOrEmpty(this.CurrentTask.Destination))
+                    if (!string.IsNullOrEmpty(value))
                     {
                         string ext = string.Empty;
                         try
                         {
-                            ext = Path.GetExtension(this.CurrentTask.Destination);
+                            ext = Path.GetExtension(value);
+                            if (FileHelper.FilePathHasInvalidChars(value))
+                            {
+                                this.errorService.ShowMessageBox(Resources.Main_InvalidDestination, Resources.Error, MessageBoxButton.OK, MessageBoxImage.Error);
+                                return;
+                            }
                         }
                         catch (ArgumentException)
                         {
                             this.errorService.ShowMessageBox(Resources.Main_InvalidDestination, Resources.Error, MessageBoxButton.OK, MessageBoxImage.Error);
+                            return;
                         }
+
+                        this.CurrentTask.Destination = value;
+                        this.NotifyOfPropertyChange(() => this.Destination);
 
                         switch (ext)
                         {
@@ -674,6 +743,11 @@ namespace HandBrakeWPF.ViewModels
                                 this.SelectedOutputFormat = OutputFormat.Mp4;
                                 break;
                         }
+                    }
+                    else
+                    {
+                        this.CurrentTask.Destination = string.Empty;
+                        this.NotifyOfPropertyChange(() => this.Destination);
                     }
                 }
             }
@@ -721,7 +795,7 @@ namespace HandBrakeWPF.ViewModels
                     {
                         if (this.userSettingService.GetUserSetting<string>(UserSettingConstants.AutoNameFormat) != null)
                         {
-                            this.Destination = AutoNameHelper.AutoName(this.CurrentTask, this.SourceName);
+                            this.Destination = AutoNameHelper.AutoName(this.CurrentTask, this.SourceName, this.SelectedPreset);
                         }
                     }
                     this.NotifyOfPropertyChange(() => this.CurrentTask);
@@ -776,7 +850,7 @@ namespace HandBrakeWPF.ViewModels
                     if (this.SelectedPointToPoint == PointToPointMode.Chapters && this.userSettingService.GetUserSetting<string>(UserSettingConstants.AutoNameFormat) != null &&
                         this.userSettingService.GetUserSetting<string>(UserSettingConstants.AutoNameFormat).Contains(Constants.Chapters))
                     {
-                        this.Destination = AutoNameHelper.AutoName(this.CurrentTask, this.SourceName);
+                        this.Destination = AutoNameHelper.AutoName(this.CurrentTask, this.SourceName, this.SelectedPreset);
                     }
                 }
 
@@ -805,7 +879,7 @@ namespace HandBrakeWPF.ViewModels
                 if (this.SelectedPointToPoint == PointToPointMode.Chapters && this.userSettingService.GetUserSetting<string>(UserSettingConstants.AutoNameFormat) != null &&
                     this.userSettingService.GetUserSetting<string>(UserSettingConstants.AutoNameFormat).Contains(Constants.Chapters))
                 {
-                    this.Destination = AutoNameHelper.AutoName(this.CurrentTask, this.SourceName);
+                    this.Destination = AutoNameHelper.AutoName(this.CurrentTask, this.SourceName, this.SelectedPreset);
                 }
 
                 if (this.SelectedStartPoint > this.SelectedEndPoint && this.SelectedPointToPoint == PointToPointMode.Chapters)
@@ -1023,6 +1097,17 @@ namespace HandBrakeWPF.ViewModels
         }
 
         /// <summary>
+        /// Action for the status window.
+        /// </summary>
+        public Action OpenLogWindowAction
+        {
+            get
+            {
+                return this.OpenLogWindow;
+            }
+        }
+
+        /// <summary>
         /// Gets or sets a value indicating whether show alert window.
         /// </summary>
         public bool ShowAlertWindow
@@ -1142,6 +1227,15 @@ namespace HandBrakeWPF.ViewModels
 
         #endregion
 
+        #region Commands 
+
+        /// <summary>
+        /// Gets or sets the queue command.
+        /// </summary>
+        public ICommand QueueCommand { get; set; }
+
+        #endregion
+
         #region Load and Shutdown Handling
 
         /// <summary>
@@ -1157,9 +1251,10 @@ namespace HandBrakeWPF.ViewModels
 
             // Setup the presets.
             this.presetService.Load();
+            this.NotifyOfPropertyChange(() => this.Presets);
 
             // Queue Recovery
-            bool queueRecovered = QueueRecoveryHelper.RecoverQueue(this.queueProcessor, this.errorService);
+            bool queueRecovered = QueueRecoveryHelper.RecoverQueue(this.queueProcessor, this.errorService, StartupOptions.AutoRestartQueue);
 
             // If the queue is not recovered, show the source selection window by default.
             if (!queueRecovered)
@@ -1171,7 +1266,19 @@ namespace HandBrakeWPF.ViewModels
                 this.HasSource = true; // Enable the GUI. Needed for in-line queue.
             }
 
+            // If the user has enabled --auto-start-queue, start the queue.
+            if (StartupOptions.AutoRestartQueue && !this.queueProcessor.IsProcessing && this.queueProcessor.Count > 0)
+            {
+                this.queueProcessor.Start(this.userSettingService.GetUserSetting<bool>(UserSettingConstants.ClearCompletedFromQueue));
+            }
+
             this.SelectedPreset = this.presetService.DefaultPreset;
+
+            // Reset WhenDone if necessary.
+            if (this.userSettingService.GetUserSetting<bool>(UserSettingConstants.ResetWhenDoneAction))
+            {
+                this.WhenDone("Do nothing");
+            }
 
             // Log Cleaning
             if (userSettingService.GetUserSetting<bool>(UserSettingConstants.ClearOldLogs))
@@ -1232,14 +1339,11 @@ namespace HandBrakeWPF.ViewModels
 
             if (window != null)
             {
-                ILogViewModel logvm = (ILogViewModel)window.DataContext;
-                logvm.SelectedTab = this.IsEncoding ? 0 : 1;
                 window.Activate();
             }
             else
             {
                 ILogViewModel logvm = IoC.Get<ILogViewModel>();
-                logvm.SelectedTab = this.IsEncoding ? 0 : 1;
                 this.windowManager.ShowWindow(logvm);
             }
         }
@@ -1381,6 +1485,14 @@ namespace HandBrakeWPF.ViewModels
             if (this.userSettingService.GetUserSetting<bool>(UserSettingConstants.ShowQueueInline))
             {
                 this.IsQueueShowingInLine = !this.IsQueueShowingInLine;
+                if (this.IsQueueShowingInLine)
+                {
+                    this.QueueViewModel.Activate();
+                }
+                else
+                {
+                    this.QueueViewModel.Deactivate();
+                }
                 this.NotifyOfPropertyChange(() => this.IsQueueShowingInLine);
             }
             else
@@ -1391,6 +1503,11 @@ namespace HandBrakeWPF.ViewModels
                 Window window = Application.Current.Windows.Cast<Window>().FirstOrDefault(x => x.GetType() == typeof(QueueView));
                 if (window != null)
                 {
+                    if (window.WindowState == WindowState.Minimized)
+                    {
+                        window.WindowState = WindowState.Normal;
+                    }
+
                     window.Activate();
                 }
                 else
@@ -1420,7 +1537,7 @@ namespace HandBrakeWPF.ViewModels
         {
             try
             {
-                Process.Start("https://trac.handbrake.fr/wiki/HandBrakeGuide");
+                Process.Start("https://handbrake.fr/docs");
             }
             catch (Exception exc)
             {
@@ -1454,6 +1571,12 @@ namespace HandBrakeWPF.ViewModels
             if (string.IsNullOrEmpty(this.CurrentTask.Destination))
             {
                 this.errorService.ShowMessageBox(Resources.Main_SetDestination, Resources.Error, MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
+
+            if (!DirectoryUtilities.IsWritable(Path.GetDirectoryName(this.CurrentTask.Destination), true, this.errorService))
+            {
+                this.errorService.ShowMessageBox(Resources.Main_NoPermissionsOrMissingDirectory, Resources.Error, MessageBoxButton.OK, MessageBoxImage.Error);
                 return false;
             }
 
@@ -1517,7 +1640,19 @@ namespace HandBrakeWPF.ViewModels
 
             if (this.CurrentTask != null && this.CurrentTask.SubtitleTracks != null && this.CurrentTask.SubtitleTracks.Count > 0)
             {
-                this.errorService.ShowMessageBox(Resources.Main_AutoAdd_AudioAndSubWarning, Resources.Warning, MessageBoxButton.OK, MessageBoxImage.Error);
+                if (this.SubtitleViewModel.SubtitleBehaviours == null || this.SubtitleViewModel.SubtitleBehaviours.SelectedBehaviour == SubtitleBehaviourModes.None)
+                {
+                    System.Windows.MessageBoxResult result = this.errorService.ShowMessageBox(
+                        Resources.Main_AutoAdd_AudioAndSubWarning,
+                        Resources.Warning,
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Warning);
+
+                    if (result == MessageBoxResult.No)
+                    {
+                        return;
+                    }
+                }
             }
 
             foreach (Title title in this.ScannedSource.Titles)
@@ -1554,7 +1689,7 @@ namespace HandBrakeWPF.ViewModels
                     this.SelectedTitle = title.Title;
                     this.AddToQueue();
                 }
-            });
+            }, this.selectedPreset);
 
             if (window != null)
             {
@@ -1576,8 +1711,6 @@ namespace HandBrakeWPF.ViewModels
 
             if (dialogResult.HasValue && dialogResult.Value)
             {
-                ShowSourceSelection = false;
-
                 this.StartScan(dialog.SelectedPath, this.TitleSpecificScan);
             }
         }
@@ -1592,8 +1725,6 @@ namespace HandBrakeWPF.ViewModels
 
             if (dialogResult.HasValue && dialogResult.Value)
             {
-                ShowSourceSelection = false;
-
                 this.StartScan(dialog.FileName, this.TitleSpecificScan);
             }
         }
@@ -1613,7 +1744,7 @@ namespace HandBrakeWPF.ViewModels
         {
             if (this.queueProcessor.IsProcessing)
             {
-                this.errorService.ShowMessageBox(Resources.Main_AlreadyEncoding, Resources.Error, MessageBoxButton.OK, MessageBoxImage.Error);
+                this.IsEncoding = true;
                 return;
             }
 
@@ -1660,8 +1791,8 @@ namespace HandBrakeWPF.ViewModels
             // Create the Queue Task and Start Processing
             if (this.AddToQueue())
             {
-                this.queueProcessor.Start(this.userSettingService.GetUserSetting<bool>(UserSettingConstants.ClearCompletedFromQueue));
                 this.IsEncoding = true;
+                this.queueProcessor.Start(this.userSettingService.GetUserSetting<bool>(UserSettingConstants.ClearCompletedFromQueue));               
             }
         }
 
@@ -1734,10 +1865,10 @@ namespace HandBrakeWPF.ViewModels
         /// <summary>
         /// Pass on the "When Done" Action to the queue view model. 
         /// </summary>
-        /// <param name="action"></param>
+        /// <param name="action">action</param>
         public void WhenDone(string action)
         {
-            this.QueueViewModel?.WhenDone(action);
+            this.QueueViewModel?.WhenDone(action, true);
         }
 
         #endregion
@@ -1808,8 +1939,8 @@ namespace HandBrakeWPF.ViewModels
                 this.Destination = saveFileDialog.FileName;
 
                 // Disk Space Check
-                string drive = Path.GetPathRoot(this.Destination);
-                if (drive != null)
+                string drive = Path.GetPathRoot(this.Destination);             
+                if (drive != null && !drive.StartsWith(@"\\"))
                 {
                     DriveInfo c = new DriveInfo(drive);
                     if (c.AvailableFreeSpace < this.userSettingService.GetUserSetting<long>(UserSettingConstants.PauseOnLowDiskspaceLevel))
@@ -1848,14 +1979,31 @@ namespace HandBrakeWPF.ViewModels
         {
             if (!string.IsNullOrEmpty(this.Destination))
             {
-                string directory = Path.GetDirectoryName(this.Destination);
-                if (!string.IsNullOrEmpty(directory))
+                try
                 {
-                    Process.Start(directory);
+                    string directory = Path.GetDirectoryName(this.Destination);
+                    if (!string.IsNullOrEmpty(directory) && Directory.Exists(directory))
+                    {
+                        Process.Start(directory);
+                    }
+                    else
+                    {
+                        MessageBoxResult result =
+                            errorService.ShowMessageBox(
+                                string.Format(Resources.DirectoryUtils_CreateFolderMsg, directory),
+                                Resources.DirectoryUtils_CreateFolder,
+                                MessageBoxButton.YesNo,
+                                MessageBoxImage.Question);
+                        if (MessageBoxResult.Yes == result)
+                        {
+                            Directory.CreateDirectory(directory);
+                            Process.Start(directory);
+                        }
+                    }
                 }
-                else
+                catch (Exception exc)
                 {
-                    Process.Start(AppDomain.CurrentDomain.BaseDirectory);
+                    this.errorService.ShowError(Resources.MainViewModel_UnableToLaunchDestDir, Resources.MainViewModel_UnableToLaunchDestDirSolution, exc);
                 }
             }
         }
@@ -1898,6 +2046,34 @@ namespace HandBrakeWPF.ViewModels
                 this.errorService.ShowMessageBox(
                         Resources.Main_PresetUpdated, Resources.Updated, MessageBoxButton.OK, MessageBoxImage.Information);
             }
+        }
+
+        /// <summary>
+        /// Manage the current Preset
+        /// </summary>
+        public void PresetManage()
+        {
+            if (this.SelectedPreset == null)
+            {
+                this.errorService.ShowMessageBox(
+                    Resources.Main_SelectPresetForUpdate, Resources.Main_NoPresetSelected, MessageBoxButton.OK, MessageBoxImage.Warning);
+
+                return;
+            }
+
+            if (this.SelectedPreset.IsBuildIn)
+            {
+                this.errorService.ShowMessageBox(
+                    Resources.Main_NoUpdateOfBuiltInPresets, Resources.Main_NoPresetSelected, MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            IManagePresetViewModel presetViewModel = IoC.Get<IManagePresetViewModel>();
+            presetViewModel.Setup(this.SelectedPreset);
+            this.windowManager.ShowDialog(presetViewModel);
+            Preset preset = presetViewModel.Preset;
+
+            this.SelectedPreset = preset; // Reselect the preset
         }
 
         /// <summary>
@@ -1946,6 +2122,7 @@ namespace HandBrakeWPF.ViewModels
             if (this.selectedPreset != null)
             {
                 this.presetService.SetDefault(this.selectedPreset);
+                this.NotifyOfPropertyChange(() => this.Presets);
                 MessageBox.Show(string.Format(Resources.Main_NewDefaultPreset, this.selectedPreset.Name), Resources.Main_Presets, MessageBoxButton.OK, MessageBoxImage.Information);
             }
             else
@@ -2037,6 +2214,7 @@ namespace HandBrakeWPF.ViewModels
         {
             if (!string.IsNullOrEmpty(filename))
             {
+                ShowSourceSelection = false;
                 this.scanService.Scan(filename, title, null, HBConfigurationFactory.Create());
             }
         }
@@ -2069,13 +2247,15 @@ namespace HandBrakeWPF.ViewModels
                 this.CurrentTask = new EncodeTask(queueEditTask);
                 this.NotifyOfPropertyChange(() => this.CurrentTask);
                 this.HasSource = true;
-
+             
                 // Update the Main Window
                 this.NotifyOfPropertyChange(() => this.Destination);
-                this.NotifyOfPropertyChange(() => this.SelectedStartPoint);
-                this.NotifyOfPropertyChange(() => this.SelectedEndPoint);
-                this.NotifyOfPropertyChange(() => this.SelectedAngle);
-                this.NotifyOfPropertyChange(() => this.SelectedPointToPoint);
+                this.SelectedAngle = this.CurrentTask.Angle;
+                int start = this.CurrentTask.StartPoint;
+                int end = this.CurrentTask.EndPoint;
+                this.SelectedPointToPoint = this.CurrentTask.PointToPointMode; // Force reset.
+                this.SelectedStartPoint = start;
+                this.SelectedEndPoint = end;
                 this.NotifyOfPropertyChange(() => this.SelectedOutputFormat);
                 this.NotifyOfPropertyChange(() => IsMkv);
 
@@ -2087,6 +2267,7 @@ namespace HandBrakeWPF.ViewModels
                 this.SubtitleViewModel.UpdateTask(this.CurrentTask);
                 this.ChaptersViewModel.UpdateTask(this.CurrentTask);
                 this.AdvancedViewModel.UpdateTask(this.CurrentTask);
+                this.MetaDataViewModel.UpdateTask(this.CurrentTask);
 
                 // Cleanup
                 this.ShowStatusWindow = false;
@@ -2128,6 +2309,9 @@ namespace HandBrakeWPF.ViewModels
                 this.IsMkv = true;
                 this.CurrentTask.OptimizeMP4 = false;
                 this.CurrentTask.IPod5GSupport = false;
+
+                this.NotifyOfPropertyChange(() => this.OptimizeMP4);
+                this.NotifyOfPropertyChange(() => this.IPod5GSupport);
             }
 
             // Update The browse file extension display
@@ -2155,6 +2339,7 @@ namespace HandBrakeWPF.ViewModels
                 this.SubtitleViewModel.SetSource(this.ScannedSource, this.SelectedTitle, this.SelectedPreset, this.CurrentTask);
                 this.ChaptersViewModel.SetSource(this.ScannedSource, this.SelectedTitle, this.SelectedPreset, this.CurrentTask);
                 this.AdvancedViewModel.SetSource(this.ScannedSource, this.SelectedTitle, this.SelectedPreset, this.CurrentTask);
+                this.MetaDataViewModel.SetSource(this.ScannedSource, this.SelectedTitle, this.SelectedPreset, this.CurrentTask);
             }
         }
 
@@ -2333,16 +2518,30 @@ namespace HandBrakeWPF.ViewModels
                 {
                     if (this.queueProcessor.EncodeService.IsEncoding)
                     {
-                        this.ProgramStatusLabel =
-                            string.Format(Resources.MainViewModel_EncodeStatusChanged_StatusLabel + Resources.Main_JobsPending_addon,
+                        string jobsPending = string.Format(Resources.Main_JobsPending_addon, this.queueProcessor.Count);
+                        if (e.PassId == -1)
+                        {
+                            this.ProgramStatusLabel = string.Format(Resources.MainViewModel_EncodeStatusChanged_SubScan_StatusLabel,
                                 e.Task,
                                 e.TaskCount,
                                 e.PercentComplete,
-                                e.CurrentFrameRate, 
-                                e.AverageFrameRate, 
-                                e.EstimatedTimeLeft, 
+                                e.EstimatedTimeLeft,
                                 e.ElapsedTime,
-                                this.queueProcessor.Count);
+                                jobsPending);
+                        }
+                        else
+                        {
+                            this.ProgramStatusLabel =
+                            string.Format(Resources.MainViewModel_EncodeStatusChanged_StatusLabel,
+                                e.Task,
+                                e.TaskCount,
+                                e.PercentComplete,
+                                e.CurrentFrameRate,
+                                e.AverageFrameRate,
+                                e.EstimatedTimeLeft,
+                                e.ElapsedTime,
+                                jobsPending);
+                        }
 
                         if (lastEncodePercentage != percent && this.windowsSeven.IsWindowsSeven)
                         {
@@ -2456,7 +2655,7 @@ namespace HandBrakeWPF.ViewModels
                     DriveInformation driveInfo = ((SourceMenuItem)item).Tag as DriveInformation;
                     if (driveInfo != null)
                     {
-                        this.StartScan(driveInfo.RootDirectory, 0);
+                        this.StartScan(driveInfo.RootDirectory, this.TitleSpecificScan);
                     }
 
                     this.ShowSourceSelection = false;
@@ -2475,10 +2674,17 @@ namespace HandBrakeWPF.ViewModels
         /// </param>
         private void UserSettingServiceSettingChanged(object sender, SettingChangedEventArgs e)
         {
-            if (e.Key == UserSettingConstants.ShowAdvancedTab)
+            switch (e.Key)
             {
-                this.NotifyOfPropertyChange(() => this.ShowAdvancedTab);
+                case UserSettingConstants.ShowAdvancedTab:
+                    this.NotifyOfPropertyChange(() => this.ShowAdvancedTab);
+                    break;
+
+                case UserSettingConstants.WhenCompleteAction:
+                    this.QueueViewModel.WhenDone(this.userSettingService.GetUserSetting<string>(UserSettingConstants.WhenCompleteAction), false);
+                    break;
             }
+
         }
 
         /// <summary>

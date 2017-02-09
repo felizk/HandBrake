@@ -1,6 +1,6 @@
 /* encvorbis.c
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -120,9 +120,9 @@ int encvorbisInit(hb_work_object_t *w, hb_job_t *job)
     ogg_packet *pheader;
     for (i = 0; i < 3; i++)
     {
-        pheader = (ogg_packet*)w->config->theora.headers[i];
+        pheader = (ogg_packet*)w->config->vorbis.headers[i];
         memcpy(pheader, &header[i], sizeof(ogg_packet));
-        pheader->packet = w->config->theora.headers[i] + sizeof(ogg_packet);
+        pheader->packet = w->config->vorbis.headers[i] + sizeof(ogg_packet);
         memcpy(pheader->packet, header[i].packet, header[i].bytes );
     }
 

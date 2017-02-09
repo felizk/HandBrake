@@ -349,7 +349,7 @@
     <value>Move Right</value>
   </data>
   <data name="AudioView_OtherwiseFallbackEncoder" xml:space="preserve">
-    <value>Otherwise use fallback encoder:</value>
+    <value>Fallback encoder:</value>
   </data>
   <data name="AudioView_ReloadDefaults" xml:space="preserve">
     <value>Reload Defaults</value>
@@ -367,7 +367,7 @@
     <value>Track Selection Behaviour:</value>
   </data>
   <data name="AudioView_TrackSettingDefaultBehaviour" xml:space="preserve">
-    <value>Track Setting Default Behaviour:</value>
+    <value>For Additional Tracks:</value>
   </data>
   <data name="AudioView_WhenAutoPassthru" xml:space="preserve">
     <value>When 'Auto Passthru' is selected as the audio codec.</value>
@@ -526,7 +526,7 @@
     <value>Options</value>
   </data>
   <data name="QueueView_Pause" xml:space="preserve">
-    <value>Pause</value>
+    <value>Pause Queue</value>
   </data>
   <data name="QueueView_PictureSettings" xml:space="preserve">
     <value>Picture Settings:</value>
@@ -541,7 +541,7 @@
     <value>Source: </value>
   </data>
   <data name="QueueView_Start" xml:space="preserve">
-    <value>Start</value>
+    <value>Start Queue</value>
   </data>
   <data name="QueueView_Subtitles" xml:space="preserve">
     <value>Subtitles:</value>
@@ -630,9 +630,6 @@
   <data name="VideoView_Quality" xml:space="preserve">
     <value>Quality</value>
   </data>
-  <data name="VideoView_SameAsSource" xml:space="preserve">
-    <value>Same as source</value>
-  </data>
   <data name="VideoView_TurboFirstPass" xml:space="preserve">
     <value>Turbo first pass</value>
   </data>
@@ -691,7 +688,7 @@
     <value>Advanced Options</value>
   </data>
   <data name="Options_AdvancedTab" xml:space="preserve">
-    <value>Show Advanced Encoder Options Tab</value>
+    <value>Allow use of 'Advanced' Tab for x264 options. (Deprecated)</value>
   </data>
   <data name="Options_Arguments" xml:space="preserve">
     <value>Arguments:</value>
@@ -735,11 +732,8 @@
   <data name="Options_DvdRead" xml:space="preserve">
     <value>Disable LibDVDNav. (libdvdread will be used instead)</value>
   </data>
-  <data name="Options_DXVA" xml:space="preserve">
-    <value>Enable DXVA Hardware Accelerated Decoding (Experimental)"</value>
-  </data>
   <data name="Options_Format" xml:space="preserve">
-    <value>Format:</value>
+    <value>File Format:</value>
   </data>
   <data name="Options_General" xml:space="preserve">
     <value>General</value>
@@ -839,5 +833,61 @@
   </data>
   <data name="Options_PauseQueueOnLowDiskSpace" xml:space="preserve">
     <value>Pause queue if disk space is low before starting a job.</value>
+  </data>
+  <data name="FiltersView_FlipVideo" xml:space="preserve">
+    <value>Flip</value>
+  </data>
+  <data name="FiltersView_Rotate" xml:space="preserve">
+    <value>Rotate:</value>
+  </data>
+  <data name="MainView_SourceOpen" xml:space="preserve">
+    <value>Open Source</value>
+  </data>
+  <data name="Generic_Save" xml:space="preserve">
+    <value>Save</value>
+  </data>
+  <data name="Preset_AudioDefaults_SubText" xml:space="preserve">
+    <value>Change the behaviour of the audio track selection for this preset.  
+This will not affect your current settings in the Audio tab.</value>
+  </data>
+  <data name="Preset_AudioDefaults_Title" xml:space="preserve">
+    <value>Audio Defaults</value>
+  </data>
+  <data name="Preset_SubtitleDefaults_SubText" xml:space="preserve">
+    <value>Change the behaviour of the subtitle track selection for this preset.  
+This will not affect your current settings in the Subtitle tab.</value>
+  </data>
+  <data name="Preset_SubtitleDefaults_Title" xml:space="preserve">
+    <value>Subtitle Defaults</value>
+  </data>
+  <data name="QueueSelection_UsingPreset" xml:space="preserve">
+    <value>The selected titles will be added using the  "{0}"  preset.</value>
+  </data>
+  <data name="AudioView_AudioDefaultsDescription" xml:space="preserve">
+    <value>Configure how the Audio Tracks are automatically selected and configured when you select a new title or source video.</value>
+  </data>
+  <data name="SubtitleView_SubtitleDefaultsDescription" xml:space="preserve">
+    <value>Configure how the Subtitle Tracks are automatically selected and configured when you select a new title or source video.</value>
+  </data>
+  <data name="OptionsView_InvalidFileFormatChars" xml:space="preserve">
+    <value>The file format entered contained invalid characters. These have been removed. </value>
+  </data>
+  <data name="AudioDefaultView_Behaviours" xml:space="preserve">
+    <value>Choose Behaviors:</value>
+  </data>
+  <data name="MetaDataView_Title" xml:space="preserve">
+    <value>Meta Data</value>
+  </data>
+  <data name="MainView_MetaDataTab" xml:space="preserve">
+    <value>Meta Data</value>
+  </data>
+  <data name="MainView_PresetManage" xml:space="preserve">
+    <value>Rename Preset</value>
+  </data>
+  <data name="ManagePresetView_ManagePreset" xml:space="preserve">
+    <value>Manage Preset</value>
+  </data>
+  <data name="Options_QsvDecodeForNonFullPath" xml:space="preserve">
+    <value>Use QSV Decoding for non QSV encoders.</value>
   </data>
 </root>

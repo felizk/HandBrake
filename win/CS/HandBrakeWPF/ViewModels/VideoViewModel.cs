@@ -17,11 +17,9 @@ namespace HandBrakeWPF.ViewModels
 
     using Caliburn.Micro;
 
-    using HandBrake.ApplicationServices.Utilities;
     using HandBrake.ApplicationServices.Interop;
     using HandBrake.ApplicationServices.Interop.Model.Encoding;
 
-    using HandBrakeWPF.Commands.Interfaces;
     using HandBrakeWPF.Properties;
     using HandBrakeWPF.Services.Interfaces;
     using HandBrakeWPF.Services.Presets.Model;
@@ -52,15 +50,12 @@ namespace HandBrakeWPF.ViewModels
 
         private const string SameAsSource = "Same as source";
         private readonly IUserSettingService userSettingService;
-        private readonly IAdvancedEncoderOptionsCommand advancedEncoderOptionsCommand;
 
         private bool displayOptimiseOptions;
         private int qualityMax;
         private int qualityMin;
         private bool showPeakFramerate;
         private int rf;
-        private bool canClear;
-        private bool useAdvancedTab;
         private bool displayTurboFirstPass;
         private int videoPresetMaxValue;
         private int videoPresetValue;
@@ -69,6 +64,9 @@ namespace HandBrakeWPF.ViewModels
         private bool fastDecode;
         private bool displayTuneControls;
         private bool displayLevelControl;
+        private bool displayProfileControl;
+        private Dictionary<string, string> encoderOptions = new Dictionary<string, string>();
+        
         #endregion
 
         #region Constructors and Destructors
@@ -82,11 +80,10 @@ namespace HandBrakeWPF.ViewModels
         /// <param name="advancedEncoderOptionsCommand">
         /// The advanced Encoder Options Command.
         /// </param>
-        public VideoViewModel(IUserSettingService userSettingService, IAdvancedEncoderOptionsCommand advancedEncoderOptionsCommand)
+        public VideoViewModel(IUserSettingService userSettingService)
         {
             this.Task = new EncodeTask { VideoEncoder = VideoEncoder.X264 };
             this.userSettingService = userSettingService;
-            this.advancedEncoderOptionsCommand = advancedEncoderOptionsCommand;
             this.QualityMin = 0;
             this.QualityMax = 51;
             this.IsConstantQuantity = true;
@@ -112,7 +109,7 @@ namespace HandBrakeWPF.ViewModels
         /// <summary>
         /// Gets a value indicating whether show advanced tab.
         /// </summary>
-        public bool ShowAdvancedTab
+        public bool IsAdvancedTabOptionEnabled
         {
             get
             {
@@ -122,8 +119,9 @@ namespace HandBrakeWPF.ViewModels
                     this.UseAdvancedTab = false;
                 }
 
-                if (this.SelectedVideoEncoder != VideoEncoder.X264)
+                if (this.SelectedVideoEncoder != VideoEncoder.X264 && this.SelectedVideoEncoder != VideoEncoder.X264_10)
                 {
+                    this.UseAdvancedTab = false;
                     return false;
                 }
 
@@ -138,25 +136,16 @@ namespace HandBrakeWPF.ViewModels
         {
             get
             {
-                return this.useAdvancedTab;
+                return this.Task.ShowAdvancedTab;
             }
             set
             {
-                if (!Equals(value, this.useAdvancedTab))
+                if (!Equals(value, this.Task.ShowAdvancedTab))
                 {
                     // Set the Advanced Tab up with the current settings, if we can.
-                    if (value)
-                    {
-                        this.Task.AdvancedEncoderOptions = this.GetActualx264Query();
-                    }
-
-                    if (!value)
-                    {
-                        this.Task.AdvancedEncoderOptions = string.Empty;
-                    }
-
-                    this.useAdvancedTab = value;
+                    this.Task.AdvancedEncoderOptions = value ? this.GetActualx264Query() : string.Empty;
                     this.Task.ShowAdvancedTab = value;
+
                     this.NotifyOfPropertyChange(() => this.UseAdvancedTab);
                 }
             }
@@ -211,9 +200,9 @@ namespace HandBrakeWPF.ViewModels
                 if (value)
                 {
                     this.Task.VideoEncodeRateType = VideoEncodeRateType.ConstantQuality;
-                    this.Task.TwoPass = false;
-                    this.Task.TurboFirstPass = false;
-                    this.Task.VideoBitrate = null;
+                    this.TwoPass = false;
+                    this.TurboFirstPass = false;
+                    this.VideoBitrate = null;
                     this.NotifyOfPropertyChange(() => this.Task);
                 }
                 else
@@ -276,7 +265,7 @@ namespace HandBrakeWPF.ViewModels
         {
             get
             {
-                return 0.0.Equals(this.DisplayRF) && this.SelectedVideoEncoder == VideoEncoder.X264;
+                return 0.0.Equals(this.DisplayRF) && (this.SelectedVideoEncoder == VideoEncoder.X264 || this.SelectedVideoEncoder == VideoEncoder.X264_10);
             }
         }
 
@@ -339,10 +328,14 @@ namespace HandBrakeWPF.ViewModels
                         this.Task.Quality = (32 - value);
                         break;    
                     case VideoEncoder.VP8:
+                    case VideoEncoder.VP9:
                         this.Task.Quality = (63 - value);
                         break;
                     case VideoEncoder.X264:
+                    case VideoEncoder.X264_10:
                     case VideoEncoder.X265:
+                    case VideoEncoder.X265_10:
+                    case VideoEncoder.X265_12:
                         double cqStep = userSettingService.GetUserSetting<double>(UserSettingConstants.X264Step);
                         double rfValue = 51.0 - value * cqStep;
                         rfValue = Math.Round(rfValue, 2);
@@ -437,7 +430,8 @@ namespace HandBrakeWPF.ViewModels
         {
             get
             {
-                return this.SelectedVideoEncoder == VideoEncoder.X264 || this.SelectedVideoEncoder == VideoEncoder.X265 ? "RF" : "QP";
+                return this.SelectedVideoEncoder == VideoEncoder.X264 || this.SelectedVideoEncoder == VideoEncoder.X264_10 || this.SelectedVideoEncoder == VideoEncoder.X265
+                    || this.SelectedVideoEncoder == VideoEncoder.X265_10 || this.SelectedVideoEncoder == VideoEncoder.X265_12 ? "RF" : "QP";
             }
         }
 
@@ -448,7 +442,7 @@ namespace HandBrakeWPF.ViewModels
         {
             get
             {
-                return this.SelectedVideoEncoder == VideoEncoder.X264 ? Resources.Video_PlaceboQuality : Resources.Video_HigherQuality;
+                return this.SelectedVideoEncoder == VideoEncoder.X264 || this.SelectedVideoEncoder == VideoEncoder.X264_10 ? Resources.Video_PlaceboQuality : Resources.Video_HigherQuality;
             }
         }
 
@@ -504,9 +498,15 @@ namespace HandBrakeWPF.ViewModels
             }
             set
             {
-                this.Task.VideoEncoder = value;
-                this.NotifyOfPropertyChange(() => this.SelectedVideoEncoder);
-                HandleEncoderChange(this.Task.VideoEncoder);
+                if (!object.Equals(value, this.Task.VideoEncoder))
+                {
+                    // Cache the current extra args. We can set them back later if the user switches back
+                    this.encoderOptions[EnumHelper<VideoEncoder>.GetShortName(this.Task.VideoEncoder)] = this.ExtraArguments;
+
+                    this.Task.VideoEncoder = value;
+                    this.NotifyOfPropertyChange(() => this.SelectedVideoEncoder);
+                    HandleEncoderChange(this.Task.VideoEncoder);
+                }
             }
         }
 
@@ -629,6 +629,26 @@ namespace HandBrakeWPF.ViewModels
         }
 
         /// <summary>
+        /// Gets or sets a value indicating whether the profile control is displayed.
+        /// </summary>
+        public bool DisplayProfileControl
+        {
+            get
+            {
+                return this.displayProfileControl;
+            }
+            set
+            {
+                if (value.Equals(this.displayProfileControl))
+                {
+                    return;
+                }
+                this.displayProfileControl = value;
+                this.NotifyOfPropertyChange(() => this.DisplayProfileControl);
+            }
+        }
+
+        /// <summary>
         /// Gets or sets a value indicating whether fast decode.
         /// </summary>
         public bool FastDecode
@@ -657,7 +677,6 @@ namespace HandBrakeWPF.ViewModels
 
                 this.NotifyOfPropertyChange(() => this.FastDecode);
                 this.NotifyOfPropertyChange(() => this.FullOptionsTooltip);
-                this.ResetAdvancedTab();
             }
         }
 
@@ -675,7 +694,6 @@ namespace HandBrakeWPF.ViewModels
                 this.Task.VideoPreset = value;
                 this.NotifyOfPropertyChange(() => this.VideoPreset);
                 this.NotifyOfPropertyChange(() => this.FullOptionsTooltip);
-                this.ResetAdvancedTab();
             }
         }
 
@@ -695,8 +713,8 @@ namespace HandBrakeWPF.ViewModels
                 HBVideoEncoder encoder = HandBrakeEncoderHelpers.VideoEncoders.FirstOrDefault(s => s.ShortName == EnumHelper<VideoEncoder>.GetShortName(this.SelectedVideoEncoder));
                 if (encoder != null)
                 {
-                    string preset = encoder.Presets[value];
-                    this.VideoPreset = new VideoPreset(preset, preset);
+                    string preset = value >= 0 ? encoder.Presets[value] : null;
+                    this.VideoPreset = preset != null ?new VideoPreset(preset, preset) : this.VideoPresets.FirstOrDefault();
                 }
 
                 this.NotifyOfPropertyChange(() => this.VideoPresetValue);
@@ -756,7 +774,6 @@ namespace HandBrakeWPF.ViewModels
 
                 this.NotifyOfPropertyChange(() => this.VideoTune);
                 this.NotifyOfPropertyChange(() => this.FullOptionsTooltip);
-                this.ResetAdvancedTab();
             }
         }
 
@@ -774,7 +791,6 @@ namespace HandBrakeWPF.ViewModels
                 this.Task.VideoProfile = value;
                 this.NotifyOfPropertyChange(() => this.VideoProfile);
                 this.NotifyOfPropertyChange(() => this.FullOptionsTooltip);
-                this.ResetAdvancedTab();
             }
         }
 
@@ -792,7 +808,6 @@ namespace HandBrakeWPF.ViewModels
                 this.Task.VideoLevel = value;
                 this.NotifyOfPropertyChange(() => this.VideoLevel);
                 this.NotifyOfPropertyChange(() => this.FullOptionsTooltip);
-                this.ResetAdvancedTab();
             }
         }
 
@@ -823,7 +838,7 @@ namespace HandBrakeWPF.ViewModels
         {
             get
             {
-                return this.SelectedVideoEncoder != VideoEncoder.X264 ? Resources.Video_EncoderExtraArgsTooltip : string.Format(Resources.Video_EncoderExtraArgs, this.GetActualx264Query());
+                return this.SelectedVideoEncoder == VideoEncoder.X264 || this.SelectedVideoEncoder == VideoEncoder.X264_10 ? string.Format(Resources.Video_EncoderExtraArgs, this.GetActualx264Query()) : Resources.Video_EncoderExtraArgsTooltip;
             }
         }
 
@@ -912,8 +927,9 @@ namespace HandBrakeWPF.ViewModels
          
             this.TwoPass = preset.Task.TwoPass;
             this.TurboFirstPass = preset.Task.TurboFirstPass;
-            this.Task.VideoBitrate = preset.Task.VideoBitrate;
 
+            this.VideoBitrate = preset.Task.VideoEncodeRateType == VideoEncodeRateType.AverageBitrate ? preset.Task.VideoBitrate : null;
+         
             this.NotifyOfPropertyChange(() => this.Task);
 
             if (preset.Task != null)
@@ -923,7 +939,9 @@ namespace HandBrakeWPF.ViewModels
                 HBVideoEncoder encoder = HandBrakeEncoderHelpers.VideoEncoders.FirstOrDefault(s => s.ShortName == EnumHelper<VideoEncoder>.GetShortName(preset.Task.VideoEncoder));
                 if (encoder != null)
                 {
-                    if (preset.Task.VideoEncoder == VideoEncoder.X264 || preset.Task.VideoEncoder == VideoEncoder.X265 || preset.Task.VideoEncoder == VideoEncoder.QuickSync || preset.Task.VideoEncoder == VideoEncoder.QuickSyncH265)
+                    if (preset.Task.VideoEncoder == VideoEncoder.X264 || preset.Task.VideoEncoder == VideoEncoder.X264_10 
+                        || preset.Task.VideoEncoder == VideoEncoder.X265 || preset.Task.VideoEncoder == VideoEncoder.X265_10 || preset.Task.VideoEncoder == VideoEncoder.X265_12 
+                        || preset.Task.VideoEncoder == VideoEncoder.QuickSync || preset.Task.VideoEncoder == VideoEncoder.QuickSyncH265)
                     {
                         this.VideoLevel = preset.Task.VideoLevel != null ? preset.Task.VideoLevel.Clone() : this.VideoLevels.FirstOrDefault();
                         this.VideoProfile = preset.Task.VideoProfile != null ? preset.Task.VideoProfile.Clone() : this.VideoProfiles.FirstOrDefault();
@@ -935,7 +953,7 @@ namespace HandBrakeWPF.ViewModels
                 }
 
                 this.ExtraArguments = preset.Task.ExtraAdvancedArguments;
-                this.UseAdvancedTab = !string.IsNullOrEmpty(preset.Task.AdvancedEncoderOptions) && this.ShowAdvancedTab;
+                this.UseAdvancedTab = this.IsAdvancedTabOptionEnabled && preset.Task.ShowAdvancedTab;
             }
         }
 
@@ -999,28 +1017,11 @@ namespace HandBrakeWPF.ViewModels
         }
 
         /// <summary>
-        /// Clear advanced settings.
-        /// </summary>
-        public void ClearAdvancedSettings()
-        {
-            this.canClear = false;
-            this.FastDecode = false;
-            this.VideoTune = null;
-            this.VideoProfile = new VideoProfile("auto", "auto");
-            this.VideoPreset = null;
-            this.VideoPresetValue = 1;
-            this.VideoLevel = new VideoLevel("auto", "auto");
-
-            this.ExtraArguments = string.Empty;
-            this.canClear = true;
-        }
-
-        /// <summary>
         /// The copy query.
         /// </summary>
         public void CopyQuery()
         {
-            Clipboard.SetDataObject(this.SelectedVideoEncoder == VideoEncoder.X264 ? this.GetActualx264Query() : this.ExtraArguments);
+            Clipboard.SetDataObject(this.SelectedVideoEncoder == VideoEncoder.X264 || this.SelectedVideoEncoder == VideoEncoder.X264_10 ? this.GetActualx264Query() : this.ExtraArguments);
         }
 
         #endregion
@@ -1045,28 +1046,22 @@ namespace HandBrakeWPF.ViewModels
                     this.QualityMax = 51;
                     break;
                 case VideoEncoder.X264:
+                case VideoEncoder.X264_10:
                 case VideoEncoder.X265:
+                case VideoEncoder.X265_10:
+                case VideoEncoder.X265_12:
                     this.QualityMin = 0;
                     this.QualityMax = (int)(51 / userSettingService.GetUserSetting<double>(UserSettingConstants.X264Step));
                     break;
                 case VideoEncoder.Theora:
                 case VideoEncoder.VP8:
+                case VideoEncoder.VP9:
                     this.QualityMin = 0;
                     this.QualityMax = 63;
                     break;
             }
         }
 
-        /// <summary>
-        /// Reset advanced tab.
-        /// </summary>
-        private void ResetAdvancedTab()
-        {
-            if (canClear)
-            {
-                this.advancedEncoderOptionsCommand.ExecuteClearAdvanced();
-            }
-        }
 
         /// <summary>
         /// The get actualx 264 query.
@@ -1133,7 +1128,7 @@ namespace HandBrakeWPF.ViewModels
         {
             if (e.Key == UserSettingConstants.ShowAdvancedTab)
             {
-                this.NotifyOfPropertyChange(() => this.ShowAdvancedTab);
+                this.NotifyOfPropertyChange(() => this.IsAdvancedTabOptionEnabled);
             }
         }
 
@@ -1160,6 +1155,7 @@ namespace HandBrakeWPF.ViewModels
                     }
                     break;
                 case VideoEncoder.VP8:
+                case VideoEncoder.VP9:
                     if (quality.HasValue)
                     {
                         int cq;
@@ -1168,7 +1164,10 @@ namespace HandBrakeWPF.ViewModels
                     }
                     break;
                 case VideoEncoder.X265:
+                case VideoEncoder.X265_10:
+                case VideoEncoder.X265_12:
                 case VideoEncoder.X264:
+                case VideoEncoder.X264_10:
                 case VideoEncoder.QuickSync:
                 case VideoEncoder.QuickSyncH265:
                     if (this.SelectedVideoEncoder == VideoEncoder.QuickSync || this.SelectedVideoEncoder == VideoEncoder.QuickSyncH265)
@@ -1283,7 +1282,7 @@ namespace HandBrakeWPF.ViewModels
             }
 
             // Tell the Advanced Panel off the change
-            IAdvancedViewModel advancedViewModel = IoC.Get<IAdvancedViewModel>();
+            IX264ViewModel advancedViewModel = IoC.Get<IX264ViewModel>();
             advancedViewModel.SetEncoder(this.Task.VideoEncoder);
 
             // Update the Quality Slider. Make sure the bounds are up to date with the users settings.
@@ -1291,15 +1290,26 @@ namespace HandBrakeWPF.ViewModels
 
             // Update control display
             this.UseAdvancedTab = selectedEncoder != VideoEncoder.QuickSync && selectedEncoder != VideoEncoder.QuickSyncH265 && this.UseAdvancedTab;
-            this.DisplayOptimiseOptions = this.SelectedVideoEncoder == VideoEncoder.X264 || this.SelectedVideoEncoder == VideoEncoder.X265 || this.SelectedVideoEncoder == VideoEncoder.QuickSync || this.SelectedVideoEncoder == VideoEncoder.QuickSyncH265;
+            this.DisplayOptimiseOptions = this.SelectedVideoEncoder == VideoEncoder.X264 || this.SelectedVideoEncoder == VideoEncoder.X264_10 ||
+                                          this.SelectedVideoEncoder == VideoEncoder.X265 || this.SelectedVideoEncoder == VideoEncoder.X265_10 || this.SelectedVideoEncoder == VideoEncoder.X265_12 ||
+                                          this.SelectedVideoEncoder == VideoEncoder.QuickSync || this.SelectedVideoEncoder == VideoEncoder.QuickSyncH265 ||
+                                          this.SelectedVideoEncoder == VideoEncoder.VP8 || this.SelectedVideoEncoder == VideoEncoder.VP9;
             this.DisplayNonQSVControls = this.SelectedVideoEncoder != VideoEncoder.QuickSync && this.SelectedVideoEncoder != VideoEncoder.QuickSyncH265;
-            this.DisplayTurboFirstPass = selectedEncoder == VideoEncoder.X264;
-            this.DisplayTuneControls = SelectedVideoEncoder == VideoEncoder.X264 || SelectedVideoEncoder == VideoEncoder.X265;
-            this.DisplayLevelControl = SelectedVideoEncoder == VideoEncoder.X264 || this.SelectedVideoEncoder == VideoEncoder.QuickSync;
-
+            this.DisplayTurboFirstPass = selectedEncoder == VideoEncoder.X264 || selectedEncoder == VideoEncoder.X264_10 || 
+                                         selectedEncoder == VideoEncoder.X265 || selectedEncoder == VideoEncoder.X265_10 || selectedEncoder == VideoEncoder.X265_12;
+            this.DisplayTuneControls = SelectedVideoEncoder == VideoEncoder.X264 || SelectedVideoEncoder == VideoEncoder.X264_10 || SelectedVideoEncoder == VideoEncoder.X265 || SelectedVideoEncoder == VideoEncoder.X265_10 || SelectedVideoEncoder == VideoEncoder.X265_12;
+            this.DisplayLevelControl = SelectedVideoEncoder == VideoEncoder.X264 || SelectedVideoEncoder == VideoEncoder.X264_10 || this.SelectedVideoEncoder == VideoEncoder.QuickSync || this.SelectedVideoEncoder == VideoEncoder.QuickSyncH265;
+            this.DisplayProfileControl = this.SelectedVideoEncoder == VideoEncoder.X264
+                                         || this.SelectedVideoEncoder == VideoEncoder.X264_10
+                                         || this.SelectedVideoEncoder == VideoEncoder.X265
+                                         || this.SelectedVideoEncoder == VideoEncoder.X265_10
+                                         || this.SelectedVideoEncoder == VideoEncoder.X265_12
+                                         || this.SelectedVideoEncoder == VideoEncoder.QuickSync
+                                         || this.SelectedVideoEncoder == VideoEncoder.QuickSyncH265;
+     
             // Refresh Display
             this.NotifyOfPropertyChange(() => this.Rfqp);
-            this.NotifyOfPropertyChange(() => this.ShowAdvancedTab);
+            this.NotifyOfPropertyChange(() => this.IsAdvancedTabOptionEnabled);
             this.NotifyOfPropertyChange(() => this.HighQualityLabel);
 
             // Handle some quicksync specific options.
@@ -1312,6 +1322,11 @@ namespace HandBrakeWPF.ViewModels
                 this.NotifyOfPropertyChange(() => SelectedFramerate);
                 this.UseAdvancedTab = false;
             }
+
+            // Cleanup Extra Arguments
+            // Load the cached arguments. Saves the user from resetting when switching encoders.
+            string result;
+            this.ExtraArguments = this.encoderOptions.TryGetValue(EnumHelper<VideoEncoder>.GetShortName(selectedEncoder), out result) ? result : string.Empty;
         }
     }
 }

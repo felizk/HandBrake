@@ -1,6 +1,6 @@
 /* ports.c
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -274,7 +274,8 @@ const char* hb_get_cpu_platform_name()
             return "Intel microarchitecture Skylake";
         case HB_CPU_PLATFORM_INTEL_CHT:
             return "Intel microarchitecture Airmont";
-
+        case HB_CPU_PLATFORM_INTEL_KBL:
+            return "Intel microarchitecture Kaby Lake";
         default:
             return NULL;
     }
@@ -360,6 +361,10 @@ static void init_cpu_info()
                     case 0x4E:
                     case 0x5E:
                         hb_cpu_info.platform = HB_CPU_PLATFORM_INTEL_SKL;
+                        break;
+                    case 0x8E:
+                    case 0x9E:
+                        hb_cpu_info.platform = HB_CPU_PLATFORM_INTEL_KBL;
                         break;
                     default:
                         break;
@@ -471,7 +476,7 @@ int hb_platform_init()
 {
     int result = 0;
 
-#if defined(SYS_MINGW) && defined(PTW32_STATIC_LIB)
+#if defined(SYS_MINGW) && defined(PTW32_VERSION)
     result = !pthread_win32_process_attach_np();
     if (result)
     {
@@ -810,7 +815,7 @@ static uint64_t hb_thread_to_integer( const hb_thread_t* t )
     #if defined( SYS_CYGWIN )
         return (uint64_t)t->thread;
     #elif defined( _WIN32 ) || defined( __MINGW32__ )
-    #if defined(PTW32_STATIC_LIB)
+    #if defined(PTW32_VERSION)
         return (uint64_t)(ptrdiff_t)t->thread.p;
     #else
         return (uint64_t)t->thread;

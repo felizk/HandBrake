@@ -1,7 +1,7 @@
 /* -*- Mode: C; indent-tabs-mode: t; c-basic-offset: 4; tab-width: 4 -*- */
 /*
  * subtitlehandler.c
- * Copyright (C) John Stebbins 2008-2016 <stebbins@stebbins>
+ * Copyright (C) John Stebbins 2008-2017 <stebbins@stebbins>
  *
  * subtitlehandler.c is free software.
  *
@@ -34,8 +34,8 @@
 #include "audiohandler.h"
 #include "subtitlehandler.h"
 
-static void subtitle_set_track_description(GhbValue *settings,
-                                           GhbValue *subsettings);
+static char * subtitle_get_track_description(GhbValue *settings,
+                                             GhbValue *subsettings);
 static void subtitle_list_refresh_selected(signal_user_data_t *ud,
                                            GhbValue *subsettings);
 static void subtitle_add_to_settings(GhbValue *settings, GhbValue *subsettings);
@@ -79,7 +79,7 @@ subtitle_refresh_list_row_ui(
     gboolean forced, burned, def;
     char *info_src, *info_src_2;
     char *info_dst, *info_dst_2;
-    const char *desc;
+    char *desc;
 
 
     info_src_2 = NULL;
@@ -88,13 +88,9 @@ subtitle_refresh_list_row_ui(
     forced = ghb_dict_get_bool(subsettings, "Forced");
     burned = ghb_dict_get_bool(subsettings, "Burn");
     def = ghb_dict_get_bool(subsettings, "Default");
-    desc = ghb_dict_get_string(subsettings, "Description");
-    if (desc == NULL)
-    {
-        subtitle_set_track_description(settings, subsettings);
-        desc = ghb_dict_get_string(subsettings, "Description");
-    }
+    desc = subtitle_get_track_description(settings, subsettings);
     info_src = g_strdup_printf("<small>%s</small>", desc);
+    g_free(desc);
     if (ghb_dict_get(subsettings, "SRT") != NULL)
     {
         gint offset;
@@ -330,8 +326,8 @@ subtitle_add_to_settings(GhbValue *settings, GhbValue *subsettings)
         subtitle_exclusive_default_settings(settings, count-1);
 }
 
-static void
-subtitle_set_track_description(GhbValue *settings, GhbValue *subsettings)
+static char *
+subtitle_get_track_description(GhbValue *settings, GhbValue *subsettings)
 {
     GhbValue *srt;
     char *desc = NULL;
@@ -397,16 +393,7 @@ subtitle_set_track_description(GhbValue *settings, GhbValue *subsettings)
         }
     }
 
-    if (desc != NULL)
-    {
-        ghb_dict_set_string(subsettings, "Description", desc);
-    }
-    else
-    {
-        ghb_dict_set_string(subsettings, "Description", "Error!");
-    }
-
-    g_free(desc);
+    return desc;
 }
 
 static GhbValue*  subtitle_add_track(
@@ -474,8 +461,6 @@ static GhbValue*  subtitle_add_track(
         // something.
         *burned = TRUE;
     }
-
-    subtitle_set_track_description(settings, subsettings);
 
     subtitle_add_to_settings(settings, subsettings);
 
@@ -733,7 +718,6 @@ subtitle_update_setting(GhbValue *val, const char *name, signal_user_data_t *ud)
     if (subsettings != NULL)
     {
         ghb_dict_set(subsettings, name, val);
-        subtitle_set_track_description(ud->settings, subsettings);
         subtitle_list_refresh_selected(ud, subsettings);
         ghb_live_reset(ud);
     }
@@ -752,7 +736,6 @@ subtitle_track_changed_cb(GtkWidget *widget, signal_user_data_t *ud)
                                           "Track", ud);
     if (subsettings != NULL)
     {
-        subtitle_set_track_description(ud->settings, subsettings);
         subtitle_update_dialog_widgets(ud, subsettings);
     }
 }
@@ -834,7 +817,6 @@ subtitle_srt_radio_toggled_cb(GtkWidget *widget, signal_user_data_t *ud)
         {
             ghb_dict_remove(subsettings, "SRT");
         }
-        subtitle_set_track_description(ud->settings, subsettings);
         subtitle_update_dialog_widgets(ud, subsettings);
         subtitle_list_refresh_selected(ud, subsettings);
         ghb_live_reset(ud);
@@ -875,10 +857,17 @@ srt_setting_update(GhbValue *val, const char *name, signal_user_data_t *ud)
         if (srt != NULL)
         {
             ghb_dict_set(srt, name, val);
-            subtitle_set_track_description(ud->settings, subsettings);
             subtitle_list_refresh_selected(ud, subsettings);
             ghb_live_reset(ud);
         }
+        else
+        {
+            ghb_value_free(&val);
+        }
+    }
+    else
+    {
+        ghb_value_free(&val);
     }
 }
 
@@ -1098,7 +1087,8 @@ subtitle_add_clicked_cb(GtkWidget *xwidget, signal_user_data_t *ud)
         if (response != GTK_RESPONSE_OK)
         {
             ghb_clear_subtitle_selection(ud->builder);
-            ghb_dict_set(ud->settings, "Subtitle", backup);
+            ghb_dict_set(ghb_get_job_settings(ud->settings),
+                         "Subtitle", backup);
             subtitle_refresh_list_ui(ud);
         }
         else
@@ -1127,8 +1117,6 @@ subtitle_add_fas_clicked_cb(GtkWidget *xwidget, signal_user_data_t *ud)
     ghb_dict_set_bool(subtitle_search, "Default", 1);
     ghb_dict_set_bool(subtitle_search, "Burn", 0);
 
-    subtitle_set_track_description(ud->settings, subtitle_search);
-
     GtkTreeView *tv;
     GtkTreeIter ti;
     GtkTreeModel *tm;
@@ -1151,7 +1139,8 @@ subtitle_add_fas_clicked_cb(GtkWidget *xwidget, signal_user_data_t *ud)
     if (response != GTK_RESPONSE_OK)
     {
         ghb_clear_subtitle_selection(ud->builder);
-        ghb_dict_set(ud->settings, "Subtitle", backup);
+        ghb_dict_set(ghb_get_job_settings(ud->settings),
+                     "Subtitle", backup);
         subtitle_refresh_list_ui(ud);
     }
     else
@@ -1532,7 +1521,8 @@ subtitle_edit_clicked_cb(GtkWidget *widget, gchar *path, signal_user_data_t *ud)
         gtk_widget_hide(dialog);
         if (response != GTK_RESPONSE_OK)
         {
-            ghb_dict_set(ud->settings, "Subtitle", backup);
+            ghb_dict_set(ghb_get_job_settings(ud->settings),
+                         "Subtitle", backup);
             subsettings = subtitle_get_selected_settings(ud, NULL);
             if (subsettings != NULL)
             {

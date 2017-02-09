@@ -7,19 +7,20 @@ PKG.basename            = $(HB.name)-$(HB.version)
 PKG.src.tar.bz2         = $(PKG.out/)$(PKG.basename)-source.tar.bz2
 PKG.src-contrib.tar.bz2 = $(PKG.out/)$(PKG.basename)-contrib.tar.bz2
 
-STAGE.out/     = $(BUILD/)stage/
-STAGE.out.src/ = $(STAGE.out/)src/
+STAGE.out/          = $(BUILD/)stage/
+STAGE.out.src/      = $(STAGE.out/)src/
+STAGE.out.src.dist/ = $(STAGE.out.src/)$(PKG.basename)
 
 ###############################################################################
 
 define STAGE.doc
 	$(MKDIR.exe) -p $(1)doc
-	$(CP.exe) $(SRC/)AUTHORS $(1)doc
+	$(CP.exe) $(SRC/)THANKS.markdown $(1)doc
+	$(CP.exe) $(SRC/)README.markdown $(1)doc
+	$(CP.exe) $(SRC/)NEWS.markdown $(1)doc
+	$(CP.exe) $(SRC/)AUTHORS.markdown $(1)doc
 	$(CP.exe) $(SRC/)COPYING $(1)doc
-	$(CP.exe) $(SRC/)CREDITS $(1)doc
-	$(CP.exe) $(SRC/)NEWS $(1)doc
-	$(CP.exe) $(SRC/)THANKS $(1)doc
-	$(CP.exe) $(SRC/)TRANSLATIONS $(1)doc
+	$(CP.exe) $(SRC/)LICENSE $(1)doc
 endef
 
 ###############################################################################

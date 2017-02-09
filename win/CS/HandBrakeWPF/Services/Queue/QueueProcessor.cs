@@ -14,11 +14,13 @@ namespace HandBrakeWPF.Services.Queue
     using System.ComponentModel;
     using System.IO;
     using System.Linq;
-    using System.Runtime.InteropServices.WindowsRuntime;
-    using System.Windows;
     using System.Xml.Serialization;
 
-    using HandBrakeWPF.Properties;
+    using HandBrake.ApplicationServices.Model;
+
+    using HandBrakeWPF.Factories;
+    using HandBrakeWPF.Services.Encode.Factories;
+    using HandBrakeWPF.Services.Encode.Model;
     using HandBrakeWPF.Services.Interfaces;
     using HandBrakeWPF.Services.Queue.Model;
     using HandBrakeWPF.Utilities;
@@ -41,24 +43,11 @@ namespace HandBrakeWPF.Services.Queue
         /// A Lock object to maintain thread safety
         /// </summary>
         private static readonly object QueueLock = new object();
-
-        /// <summary>
-        /// The Queue of Job objects
-        /// </summary>
-        private readonly BindingList<QueueTask> queue = new BindingList<QueueTask>();
-
-        /// <summary>
-        /// HandBrakes Queue file with a place holder for an extra string.
-        /// </summary>
-        private readonly string queueFile;
-
-        /// <summary>
-        /// The clear completed.
-        /// </summary>
-        private bool clearCompleted;
-
         private readonly IUserSettingService userSettingService;
         private readonly IErrorService errorService;
+        private readonly BindingList<QueueTask> queue = new BindingList<QueueTask>();
+        private readonly string queueFile;
+        private bool clearCompleted;
 
         #endregion
 
@@ -140,6 +129,9 @@ namespace HandBrakeWPF.Services.Queue
         /// </summary>
         public event EventHandler QueuePaused;
 
+        /// <summary>
+        /// The low diskspace detected.
+        /// </summary>
         public event EventHandler LowDiskspaceDetected;
 
         #endregion
@@ -240,6 +232,28 @@ namespace HandBrakeWPF.Services.Queue
         }
 
         /// <summary>
+        /// Export the Queue the standardised JSON format.
+        /// </summary>
+        /// <param name="exportPath">
+        /// The export Path.
+        /// </param>
+        public void ExportJson(string exportPath)
+        {
+            List<QueueTask> jobs = this.queue.Where(item => item.Status != QueueItemStatus.Completed).ToList();
+            List<EncodeTask> workUnits = jobs.Select(job => job.Task).ToList();
+            HBConfiguration config = HBConfigurationFactory.Create(); // Default to current settings for now. These will hopefully go away in the future.
+
+            string json = QueueFactory.GetQueueJson(workUnits, config);
+
+            using (var strm = new StreamWriter(exportPath, false))
+            {
+                strm.Write(json);
+                strm.Close();
+                strm.Dispose();
+            }
+        }
+
+        /// <summary>
         /// Checks the current queue for an existing instance of the specified destination.
         /// </summary>
         /// <param name="destination">
@@ -250,7 +264,19 @@ namespace HandBrakeWPF.Services.Queue
         /// </returns>
         public bool CheckForDestinationPathDuplicates(string destination)
         {
-            return this.queue.Any(job => job.Task != null && job.Status == QueueItemStatus.Waiting && job.Task.Destination != null && job.Task.Destination.Contains(destination.Replace("\\\\", "\\")));
+            foreach (QueueTask job in this.queue)
+            {
+                if (String.Equals(
+                    job.Task.Destination,
+                    destination.Replace("\\\\", "\\"),
+                    StringComparison.OrdinalIgnoreCase)
+                    && job.Status == QueueItemStatus.Waiting)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -430,7 +456,7 @@ namespace HandBrakeWPF.Services.Queue
                                     // Reset InProgress/Error to Waiting so it can be processed
                                     if (item.Status == QueueItemStatus.InProgress)
                                     {
-                                        item.Status = QueueItemStatus.Waiting;
+                                        item.Status = QueueItemStatus.Error;
                                     }
 
                                     this.queue.Add(item);
@@ -469,7 +495,7 @@ namespace HandBrakeWPF.Services.Queue
         {
             if (this.IsProcessing)
             {
-                throw new Exception("Already Processing the Queue");
+                return;
             }
 
             this.clearCompleted = isClearCompleted;
@@ -604,6 +630,9 @@ namespace HandBrakeWPF.Services.Queue
             this.IsProcessing = false;
         }
 
+        /// <summary>
+        /// The on low diskspace detected.
+        /// </summary>
         protected virtual void OnLowDiskspaceDetected()
         {
             this.LowDiskspaceDetected?.Invoke(this, EventArgs.Empty);
@@ -620,7 +649,7 @@ namespace HandBrakeWPF.Services.Queue
                 if (this.userSettingService.GetUserSetting<bool>(UserSettingConstants.PauseOnLowDiskspace))
                 {
                     string drive = Path.GetPathRoot(job.Task.Destination);
-                    if (drive != null)
+                    if (!string.IsNullOrEmpty(drive) && !drive.StartsWith("\\"))
                     {
                         DriveInfo c = new DriveInfo(drive);
                         if (c.AvailableFreeSpace < this.userSettingService.GetUserSetting<long>(UserSettingConstants.PauseOnLowDiskspaceLevel))
@@ -647,6 +676,5 @@ namespace HandBrakeWPF.Services.Queue
         }
 
         #endregion
-
     }
 }

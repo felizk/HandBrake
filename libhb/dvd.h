@@ -1,6 +1,6 @@
 /* dvd.h
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -43,6 +43,7 @@ struct hb_dvdread_s
     uint16_t       cur_vob_id;
     uint8_t        cur_cell_id;
     hb_handle_t  * h;
+    int            chapter;
 };
 
 struct hb_dvdnav_s

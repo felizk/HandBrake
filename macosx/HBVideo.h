@@ -11,25 +11,31 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+typedef NS_ENUM(NSUInteger, HBVideoQualityType) {
+    HBVideoQualityTypeAvgBitrate,
+    HBVideoQualityTypeConstantQuality,
+};
+
+typedef NS_ENUM(NSUInteger, HBVideoFrameRateMode) {
+    HBVideoFrameRateModeVFR_PFR,
+    HBVideoFrameRateModeCFR,
+};
+
 extern NSString * const HBVideoChangedNotification;
 
 /**
  *  HBVideo
  */
-@interface HBVideo : NSObject <NSSecureCoding, NSCopying, HBPresetCoding>
-
-- (instancetype)initWithJob:(HBJob *)job;
-
-- (void)containerChanged;
+@interface HBVideo : NSObject <NSSecureCoding, NSCopying>
 
 @property (nonatomic, readwrite) int encoder;
 
-@property (nonatomic, readwrite) int qualityType;
+@property (nonatomic, readwrite) HBVideoQualityType qualityType;
 @property (nonatomic, readwrite) int avgBitrate;
 @property (nonatomic, readwrite) double quality;
 
+@property (nonatomic, readwrite) HBVideoFrameRateMode frameRateMode;
 @property (nonatomic, readwrite) int frameRate;
-@property (nonatomic, readwrite) int frameRateMode;
 
 @property (nonatomic, readwrite) BOOL twoPass;
 @property (nonatomic, readwrite) BOOL turboTwoPass;
@@ -48,7 +54,6 @@ extern NSString * const HBVideoChangedNotification;
 
 @property (nonatomic, readwrite) BOOL fastDecode;
 
-@property (nonatomic, readwrite, weak) HBJob *job;
 @property (nonatomic, readonly) NSString *completeTune;
 
 @property (nonatomic, readwrite, weak, nullable) NSUndoManager *undo;

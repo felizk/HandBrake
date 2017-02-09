@@ -1,6 +1,6 @@
 /* rendersub.c
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -240,7 +240,7 @@ static hb_buffer_t * ScaleSubtitle(hb_filter_private_t *pv,
             pv->sws = hb_sws_get_context(
                                 sub->f.width, sub->f.height, sub->f.fmt,
                                 scaled->f.width, scaled->f.height, sub->f.fmt,
-                                SWS_LANCZOS|SWS_ACCURATE_RND);
+                                SWS_LANCZOS|SWS_ACCURATE_RND, SWS_CS_DEFAULT);
             pv->sws_width   = width;
             pv->sws_height  = height;
         }
@@ -414,6 +414,11 @@ static int vobsub_work( hb_filter_object_t * filter,
     // subtitle list
     while( ( sub = hb_fifo_get( filter->subtitle->fifo_out ) ) )
     {
+        if (sub->s.flags & HB_BUF_FLAG_EOF)
+        {
+            hb_buffer_close(&sub);
+            break;
+        }
         hb_list_add( pv->sub_list, sub );
     }
 
@@ -641,6 +646,11 @@ static int ssa_work( hb_filter_object_t * filter,
     // subtitle list
     while( ( sub = hb_fifo_get( filter->subtitle->fifo_out ) ) )
     {
+        if (sub->s.flags & HB_BUF_FLAG_EOF)
+        {
+            hb_buffer_close(&sub);
+            break;
+        }
         // Parse MKV-SSA packet
         // SSA subtitles always have an explicit stop time, so we
         // do not need to do special processing for stop == AV_NOPTS_VALUE
@@ -739,6 +749,20 @@ static int textsub_work(hb_filter_object_t * filter,
     // subtitle list
     while ((sub = hb_fifo_get(filter->subtitle->fifo_out)))
     {
+        if (sub->s.flags & HB_BUF_FLAG_EOF)
+        {
+            hb_buffer_close(&sub);
+            if (pv->current_sub != NULL)
+            {
+                // Make us some duration for final sub
+                pv->current_sub->s.stop = pv->current_sub->s.start +
+                                          90000LL * 10;
+                process_sub(pv, pv->current_sub);
+                hb_buffer_close(&pv->current_sub);
+            }
+            break;
+        }
+
         // libass expects times in ms.  So to make the math easy,
         // convert to ms immediately.
         sub->s.start /= 90;
@@ -761,9 +785,9 @@ static int textsub_work(hb_filter_object_t * filter,
             process_sub(pv, pv->current_sub);
             hb_buffer_close(&pv->current_sub);
         }
-        if (sub->s.start == sub->s.stop)
+        if (sub->s.flags & HB_BUF_FLAG_EOS)
         {
-            // Zero duration sub used to "clear" previous sub that had
+            // marker used to "clear" previous sub that had
             // an unknown duration
             hb_buffer_close(&sub);
         }
@@ -893,6 +917,11 @@ static int pgssub_work( hb_filter_object_t * filter,
     // subtitle list
     while ( ( sub = hb_fifo_get( filter->subtitle->fifo_out ) ) )
     {
+        if (sub->s.flags & HB_BUF_FLAG_EOF)
+        {
+            hb_buffer_close(&sub);
+            break;
+        }
         hb_list_add( pv->sub_list, sub );
     }
 

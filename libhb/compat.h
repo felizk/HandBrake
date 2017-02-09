@@ -1,6 +1,6 @@
 /* compat.h
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -24,5 +24,15 @@
 
 char *strtok_r(char *s, const char *delim, char **save_ptr);
 #endif // HB_NEED_STRTOK_R
+
+#ifndef HAS_STRERROR_R
+#ifndef _GNU_SOURCE
+#include <sys/types.h>
+/*
+ * POSIX definition of strerror_r() -- see http://pubs.opengroup.org/onlinepubs/9699919799/functions/strerror.html
+ */
+int strerror_r(int errnum, char *strerrbuf, size_t buflen);
+#endif // _GNU_SOURCE
+#endif // HAVE_STRERROR_R
 
 #endif // HB_COMPAT_H

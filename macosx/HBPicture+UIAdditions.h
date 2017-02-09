@@ -22,10 +22,7 @@
 @property (nonatomic, readonly) int maxVerticalCrop;
 @property (nonatomic, readonly) int maxHorizontalCrop;
 
-@property (nonatomic, readonly, getter=isWidthEditable) BOOL widthEditable;
-@property (nonatomic, readonly, getter=isHeightEditable) BOOL heightEditable;
-
-@property (nonatomic, readonly, getter=isKeepDisplayAspect) BOOL keepDisplayAspectEditable;
+@property (nonatomic, readonly, getter=isKeepDisplayAspectEditable) BOOL keepDisplayAspectEditable;
 @property (nonatomic, readonly, getter=isCustomAnamorphicEnabled) BOOL customAnamorphicEnabled;
 
 @end

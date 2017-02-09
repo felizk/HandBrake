@@ -12,13 +12,13 @@ NS_ASSUME_NONNULL_BEGIN
 
 @protocol HBTitleSelectionDelegate <NSObject>
 
-- (void)didSelectIndexes:(NSIndexSet *)indexes;
+- (void)didSelectTitles:(NSArray<HBTitle *> *)titles;
 
 @end
 
 @interface HBTitleSelectionController : NSWindowController
 
-- (instancetype)initWithTitles:(NSArray<HBTitle *> *)titles delegate:(id<HBTitleSelectionDelegate>)delegate;
+- (instancetype)initWithTitles:(NSArray<HBTitle *> *)titles presetName:(NSString *)presetName delegate:(id<HBTitleSelectionDelegate>)delegate;
 
 @end
 

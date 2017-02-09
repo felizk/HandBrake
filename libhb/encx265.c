@@ -1,6 +1,6 @@
 /* encx265.c
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -39,33 +39,24 @@ static const char * const hb_x265_encopt_synonyms[][2] =
 
 struct hb_work_private_s
 {
-    hb_job_t       *job;
-    x265_encoder   *x265;
-    x265_param     *param;
+    hb_job_t           * job;
+    x265_encoder       * x265;
+    x265_param         * param;
 
-    int64_t         last_stop;
-    uint32_t        frames_in;
+    int64_t              last_stop;
+    uint32_t             frames_in;
 
-    hb_list_t      *delayed_chapters;
-    int64_t         next_chapter_pts;
+    hb_chapter_queue_t * chapter_queue;
 
     struct
     {
-        int64_t     duration;
-    }
-    frame_info[FRAME_INFO_SIZE];
+        int64_t          duration;
+    } frame_info[FRAME_INFO_SIZE];
 
-    char            csvfn[1024];
+    char                 csvfn[1024];
 
     // Multiple bit-depth
-    const x265_api *api;
-};
-
-// used in delayed_chapters list
-struct chapter_s
-{
-    int     index;
-    int64_t start;
+    const x265_api     * api;
 };
 
 static int param_parse(hb_work_private_t *pv, x265_param *param,
@@ -101,18 +92,18 @@ int encx265Init(hb_work_object_t *w, hb_job_t *job)
     uint32_t            nnal;
     const char * const *profile_names;
 
-    pv->next_chapter_pts = AV_NOPTS_VALUE;
-    pv->delayed_chapters = hb_list_init();
     pv->job              = job;
+    pv->last_stop        = AV_NOPTS_VALUE;
+    pv->chapter_queue    = hb_chapter_queue_init();
     w->private_data      = pv;
 
     depth                = hb_video_encoder_get_depth(job->vcodec);
     profile_names        = hb_video_encoder_get_profiles(job->vcodec);
-    pv->api              = x265_api_get(depth);
+    pv->api              = x265_api_query(depth, X265_BUILD, NULL);
 
     if (pv->api == NULL)
     {
-        hb_error("encx265: x265_api_get failed, bit depth %d.", depth);
+        hb_error("encx265: x265_api_query failed, bit depth %d.", depth);
         goto fail;
     }
 
@@ -183,7 +174,12 @@ int encx265Init(hb_work_object_t *w, hb_job_t *job)
             strcpy(transfer,    "bt709");
             strcpy(colormatrix, "bt709");
             break;
-        case 4: // custom
+        case 4: // ITU BT.2020 UHD content
+            strcpy(colorprim,   "bt2020");
+            strcpy(transfer,    "bt709");
+            strcpy(colormatrix, "bt2020nc");
+            break;
+        case 5: // custom
             snprintf(colorprim,   sizeof(colorprim),   "%d", job->color_prim);
             snprintf(transfer,    sizeof(transfer),    "%d", job->color_transfer);
             snprintf(colormatrix, sizeof(colormatrix), "%d", job->color_matrix);
@@ -249,7 +245,7 @@ int encx265Init(hb_work_object_t *w, hb_job_t *job)
         goto fail;
     }
 
-    if (job->vquality > 0)
+    if (job->vquality > HB_INVALID_VIDEO_QUALITY)
     {
         param->rc.rateControlMode = X265_RC_CRF;
         param->rc.rfConstant      = job->vquality;
@@ -270,10 +266,15 @@ int encx265Init(hb_work_object_t *w, hb_job_t *job)
             {
                 goto fail;
             }
-            if (job->pass_id == HB_PASS_ENCODE_1ST && job->fastfirstpass == 0 &&
-                param_parse(pv, param, "slow-firstpass", "1"))
+            if (job->pass_id == HB_PASS_ENCODE_1ST)
             {
-                goto fail;
+                char slowfirstpass[2];
+                snprintf(slowfirstpass, sizeof(slowfirstpass), "%d",
+                         !job->fastfirstpass);
+                if (param_parse(pv, param, "slow-firstpass", slowfirstpass))
+                {
+                    goto fail;
+                }
             }
         }
     }
@@ -347,17 +348,11 @@ void encx265Close(hb_work_object_t *w)
 {
     hb_work_private_t *pv = w->private_data;
 
-    if (pv == NULL) return;
-    if (pv->delayed_chapters != NULL)
+    if (pv == NULL)
     {
-        struct chapter_s *item;
-        while ((item = hb_list_item(pv->delayed_chapters, 0)) != NULL)
-        {
-            hb_list_rem(pv->delayed_chapters, item);
-            free(item);
-        }
-        hb_list_close(&pv->delayed_chapters);
+        return;
     }
+    hb_chapter_queue_close(&pv->chapter_queue);
 
     pv->api->param_free(pv->param);
     pv->api->encoder_close(pv->x265);
@@ -399,11 +394,17 @@ static hb_buffer_t* nal_encode(hb_work_object_t *w,
     {
         return NULL;
     }
-
+    buf->s.flags = 0;
     buf->size = 0;
+
     // copy the bitstream data
     for (i = 0; i < nnal; i++)
     {
+        if (HB_HEVC_NALU_KEYFRAME(nal[i].type))
+        {
+            buf->s.flags |= HB_FLAG_FRAMETYPE_REF;
+            buf->s.flags |= HB_FLAG_FRAMETYPE_KEY;
+        }
         memcpy(buf->data + buf->size, nal[i].payload, nal[i].sizeBytes);
         buf->size += nal[i].sizeBytes;
     }
@@ -421,10 +422,9 @@ static hb_buffer_t* nal_encode(hb_work_object_t *w,
     switch (pic_out->sliceType)
     {
         case X265_TYPE_IDR:
+            buf->s.flags |= HB_FLAG_FRAMETYPE_REF;
+            buf->s.flags |= HB_FLAG_FRAMETYPE_KEY;
             buf->s.frametype = HB_FRAME_IDR;
-            break;
-        case X265_TYPE_I:
-            buf->s.frametype = HB_FRAME_I;
             break;
         case X265_TYPE_P:
             buf->s.frametype = HB_FRAME_P;
@@ -435,36 +435,15 @@ static hb_buffer_t* nal_encode(hb_work_object_t *w,
         case X265_TYPE_BREF:
             buf->s.frametype = HB_FRAME_BREF;
             break;
+        case X265_TYPE_I:
         default:
-            buf->s.frametype = 0;
+            buf->s.frametype = HB_FRAME_I;
             break;
     }
 
-    if (pv->next_chapter_pts != AV_NOPTS_VALUE &&
-        pv->next_chapter_pts <= pic_out->pts   &&
-        pic_out->sliceType   == X265_TYPE_IDR)
+    if (buf->s.flags & HB_FLAG_FRAMETYPE_KEY)
     {
-        // we're no longer looking for this chapter
-        pv->next_chapter_pts = AV_NOPTS_VALUE;
-
-        // get the chapter index from the list
-        struct chapter_s *item = hb_list_item(pv->delayed_chapters, 0);
-        if (item != NULL)
-        {
-            // we're done with this chapter
-            hb_list_rem(pv->delayed_chapters, item);
-            buf->s.new_chap = item->index;
-            free(item);
-
-            // we may still have another pending chapter
-            item = hb_list_item(pv->delayed_chapters, 0);
-            if (item != NULL)
-            {
-                // we're looking for this one now
-                // we still need it, don't remove it
-                pv->next_chapter_pts = item->start;
-            }
-        }
+        hb_chapter_dequeue(pv->chapter_queue, buf);
     }
 
     // discard empty buffers (no video)
@@ -497,41 +476,22 @@ static hb_buffer_t* x265_encode(hb_work_object_t *w, hb_buffer_t *in)
 
     if (in->s.new_chap && job->chapter_markers)
     {
-        if (pv->next_chapter_pts == AV_NOPTS_VALUE)
-        {
-            pv->next_chapter_pts = in->s.start;
-        }
         /*
-         * Chapter markers are sometimes so close we can get a new one before
-         * the previous marker has been through the encoding queue.
-         *
-         * Dropping markers can cause weird side-effects downstream, including
-         * but not limited to missing chapters in the output, so we need to save
-         * it somehow.
-         */
-        struct chapter_s *item = malloc(sizeof(struct chapter_s));
-        if (item != NULL)
-        {
-            item->start = in->s.start;
-            item->index = in->s.new_chap;
-            hb_list_add(pv->delayed_chapters, item);
-        }
-        /* don't let 'work_loop' put a chapter mark on the wrong buffer */
-        in->s.new_chap = 0;
-        /*
-         * Chapters have to start with an IDR frame so request that this frame be
-         * coded as IDR. Since there may be up to 16 frames currently buffered in
-         * the encoder, remember the timestamp so when this frame finally pops out
-         * of the encoder we'll mark its buffer as the start of a chapter.
+         * Chapters have to start with an IDR frame so request that this
+         * frame be coded as IDR. Since there may be up to 16 frames
+         * currently buffered in the encoder, remember the timestamp so
+         * when this frame finally pops out of the encoder we'll mark
+         * its buffer as the start of a chapter.
          */
         pic_in.sliceType = X265_TYPE_IDR;
+        hb_chapter_enqueue(pv->chapter_queue, in);
     }
     else
     {
         pic_in.sliceType = X265_TYPE_AUTO;
     }
 
-    if (pv->last_stop != in->s.start)
+    if (pv->last_stop != AV_NOPTS_VALUE && pv->last_stop != in->s.start)
     {
         hb_log("encx265 input continuity err: last stop %"PRId64"  start %"PRId64,
                pv->last_stop, in->s.start);

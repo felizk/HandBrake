@@ -1,6 +1,6 @@
 /* preset.h
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -39,6 +39,9 @@ void         hb_presets_builtin_init(void);
 void         hb_presets_free(void);
 
 #endif // __LIBHB__
+
+// Add the default CLI preset(s) to the currently loaded presets
+int          hb_presets_cli_default_init(void);
 
 // Get the currently supported preset format version
 void hb_presets_current_version(int *major, int* minor, int *micro);
@@ -84,7 +87,7 @@ char       * hb_presets_clean_json(const char *json);
 // Import a preset.  Sanitizes and converts old key/value pairs
 // to new key/value pairs.  This is applied for you by hb_presets_add(),
 // hb_presets_add_json(), hb_presets_add_file(), and hb_presets_add_path()
-int          hb_presets_import(hb_value_t *preset);
+int          hb_presets_import(const hb_value_t *in, hb_value_t **out);
 
 // Import a json preset.  Sanitizes and converts old key/value pairs
 // to new key/value pairs.
@@ -146,6 +149,8 @@ int hb_preset_job_add_subtitles(hb_handle_t *h, int title_index,
 // Reinitialize audio from preset defaults.
 int hb_preset_job_add_audio(hb_handle_t *h, int title_index,
                             const hb_dict_t *preset, hb_dict_t *job_dict);
+void hb_sanitize_audio_settings(const hb_title_t * title,
+                                hb_value_t * audio_settings);
 
 // Lookup a preset in the preset list.  The "name" may contain '/'
 // separators to explicitely specify a preset within the preset lists
@@ -175,6 +180,7 @@ int          hb_preset_move(const hb_preset_index_t *src_path,
 hb_dict_t         * hb_presets_get_default(void);
 char              * hb_presets_get_default_json(void);
 hb_preset_index_t * hb_presets_get_default_index(void);
+void                hb_presets_clear_default();
 
 // Package the provided preset (wrap in dict and add version etc)
 // and write to json file

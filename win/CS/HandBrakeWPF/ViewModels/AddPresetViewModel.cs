@@ -12,7 +12,8 @@ namespace HandBrakeWPF.ViewModels
     using System.Collections.Generic;
     using System.Windows;
 
-    using HandBrake.ApplicationServices.Utilities;
+    using Caliburn.Micro;
+
     using HandBrake.ApplicationServices.Interop.Model.Encoding;
 
     using HandBrakeWPF.Model.Audio;
@@ -45,6 +46,11 @@ namespace HandBrakeWPF.ViewModels
         private readonly IErrorService errorService;
 
         /// <summary>
+        /// The window manager.
+        /// </summary>
+        private readonly IWindowManager windowManager;
+
+        /// <summary>
         /// Backing fields for Selected Picture settings mode.
         /// </summary>
         private PresetPictureSettingsMode selectedPictureSettingMode;
@@ -59,6 +65,9 @@ namespace HandBrakeWPF.ViewModels
         /// </summary>
         private Title selectedTitle;
 
+        private IAudioDefaultsViewModel audioDefaultsViewModel;
+        private ISubtitlesDefaultsViewModel subtitlesDefaultsViewModel;
+
         /// <summary>
         /// Initializes a new instance of the <see cref="AddPresetViewModel"/> class.
         /// </summary>
@@ -68,10 +77,14 @@ namespace HandBrakeWPF.ViewModels
         /// <param name="errorService">
         /// The Error Service
         /// </param>
-        public AddPresetViewModel(IPresetService presetService, IErrorService errorService)
+        /// <param name="windowManager">
+        /// The window Manager.
+        /// </param>
+        public AddPresetViewModel(IPresetService presetService, IErrorService errorService, IWindowManager windowManager)
         {
             this.presetService = presetService;
             this.errorService = errorService;
+            this.windowManager = windowManager;
             this.Title = "Add Preset";
             this.Preset = new Preset { IsBuildIn = false, IsDefault = false, Category = PresetService.UserPresetCatgoryName};
             this.PictureSettingsModes = EnumHelper<PresetPictureSettingsMode>.GetEnumList();
@@ -149,6 +162,13 @@ namespace HandBrakeWPF.ViewModels
             this.Preset.Task = new EncodeTask(task);
             this.Preset.AudioTrackBehaviours = audioBehaviours.Clone();
             this.Preset.SubtitleTrackBehaviours = subtitleBehaviours.Clone();
+
+            this.audioDefaultsViewModel = new AudioDefaultsViewModel(this.Preset.Task);
+            this.audioDefaultsViewModel.Setup(this.Preset, this.Preset.Task);
+
+            this.subtitlesDefaultsViewModel = new SubtitlesDefaultsViewModel();
+            this.subtitlesDefaultsViewModel.SetupLanguages(subtitleBehaviours);
+
             this.selectedTitle = title;
 
             switch (task.Anamorphic)
@@ -161,7 +181,7 @@ namespace HandBrakeWPF.ViewModels
                         this.CustomHeight = title.Resolution.Height;
                     }
                     break;
-                case Anamorphic.Strict:
+                case Anamorphic.Automatic:
                     this.SelectedPictureSettingMode = PresetPictureSettingsMode.SourceMaximum;
                     break;
             }
@@ -218,8 +238,8 @@ namespace HandBrakeWPF.ViewModels
 
             if (this.SelectedPictureSettingMode == PresetPictureSettingsMode.SourceMaximum)
             {
-                this.Preset.Task.MaxWidth = selectedTitle.Resolution.Width;
-                this.Preset.Task.MaxHeight = selectedTitle.Resolution.Height;
+                this.Preset.Task.MaxHeight = null;
+                this.Preset.Task.MaxWidth = null;
             }
 
             // Add the Preset
@@ -233,6 +253,39 @@ namespace HandBrakeWPF.ViewModels
             {
                 this.Close();
             }
+        }
+
+        /// <summary>
+        /// The edit audio defaults.
+        /// </summary>
+        public void EditAudioDefaults()
+        {
+            IPopupWindowViewModel popup = new PopupWindowViewModel(this.audioDefaultsViewModel, ResourcesUI.Preset_AudioDefaults_Title, ResourcesUI.Preset_AudioDefaults_SubText);
+            if (this.windowManager.ShowDialog(popup) == true)
+            {
+                this.Preset.AudioTrackBehaviours = this.audioDefaultsViewModel.AudioBehaviours.Clone();
+            }
+            else
+            {
+                // Handle other case(s)
+            }
+        }
+
+        /// <summary>
+        /// The edit subtitle defaults.
+        /// </summary>
+        public void EditSubtitleDefaults()
+        {
+            IPopupWindowViewModel popup = new PopupWindowViewModel(this.subtitlesDefaultsViewModel, ResourcesUI.Preset_SubtitleDefaults_Title, ResourcesUI.Preset_SubtitleDefaults_SubText);
+            
+            if (this.windowManager.ShowDialog(popup) == true)
+            {
+                this.Preset.SubtitleTrackBehaviours = this.subtitlesDefaultsViewModel.SubtitleBehaviours.Clone();
+            }
+            else
+            {
+                // Handle other case(s)
+            }     
         }
 
         /// <summary>

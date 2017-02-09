@@ -1,6 +1,6 @@
 /* dvdnav.c
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -1646,11 +1646,7 @@ static hb_buffer_t * hb_dvdnav_read( hb_dvd_t * e )
         case DVDNAV_BLOCK_OK:
             // We have received a regular block of the currently playing
             // MPEG stream.
-
-            // The muxers expect to only get chapter 2 and above
-            // They write chapter 1 when chapter 2 is detected.
-            if (chapter > 1)
-                b->s.new_chap = chapter;
+            b->s.new_chap = chapter;
             chapter = 0;
             error_count = 0;
             return b;
@@ -1791,12 +1787,7 @@ static hb_buffer_t * hb_dvdnav_read( hb_dvd_t * e )
 
             // mpegdemux expects to get these.  I don't think it does
             // anything useful with them however.
-
-            // The muxers expect to only get chapter 2 and above
-            // They write chapter 1 when chapter 2 is detected.
-            if (chapter > 1)
-                b->s.new_chap = chapter;
-            chapter = 0;
+            b->s.new_chap = chapter;
             return b;
 
             break;

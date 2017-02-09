@@ -1,7 +1,7 @@
 /* -*- Mode: C; indent-tabs-mode: t; c-basic-offset: 4; tab-width: 4 -*- */
 /*
  * presets.c
- * Copyright (C) John Stebbins 2008-2016 <stebbins@stebbins>
+ * Copyright (C) John Stebbins 2008-2017 <stebbins@stebbins>
  *
  * presets.c is free software.
  *
@@ -54,6 +54,7 @@ enum
 
 static GhbValue *prefsDict = NULL;
 static gboolean prefs_modified = FALSE;
+static gchar *override_user_config_dir = NULL;
 
 static void store_prefs(void);
 static void store_presets(void);
@@ -284,24 +285,24 @@ ghb_preset_to_settings(GhbValue *settings, GhbValue *preset)
 
     // Fix up all the internal settings that are derived from preset values.
 
-    int width, height;
-    width = ghb_dict_get_int(settings, "PictureWidth");
-    height = ghb_dict_get_int(settings, "PictureHeight");
-
     ghb_dict_set(settings, "scale_height", ghb_value_dup(
         ghb_dict_get_value(settings, "PictureHeight")));
 
     ghb_dict_set(settings, "scale_width", ghb_value_dup(
         ghb_dict_get_value(settings, "PictureWidth")));
 
-    gint uses_pic;
+    int width, height, uses_pic, autoscale;
+
+    width    = ghb_dict_get_int(settings, "PictureWidth");
+    height   = ghb_dict_get_int(settings, "PictureHeight");
+    uses_pic = ghb_dict_get_int(settings, "UsesPictureSettings");
+
+    autoscale = uses_pic != 1 || (width == 0 && height == 0);
+    ghb_dict_set_bool(settings, "autoscale", autoscale);
+
     gint vqtype;
 
-    uses_pic = ghb_dict_get_int(settings, "UsesPictureSettings");
     vqtype = ghb_dict_get_int(settings, "VideoQualityType");
-
-    ghb_dict_set_bool(settings, "autoscale",
-                      uses_pic == 2 || (width == 0 && height == 0));
 
     // VideoQualityType/0/1/2 - vquality_type_/target/bitrate/constant
     // *note: target is no longer used
@@ -330,13 +331,13 @@ ghb_preset_to_settings(GhbValue *settings, GhbValue *preset)
     }
 
     const gchar *mode = ghb_dict_get_string(settings, "VideoFramerateMode");
-    if (strcmp(mode, "cfr") == 0)
+    if (mode != NULL && strcmp(mode, "cfr") == 0)
     {
         ghb_dict_set_bool(settings, "VideoFramerateCFR", TRUE);
         ghb_dict_set_bool(settings, "VideoFrameratePFR", FALSE);
         ghb_dict_set_bool(settings, "VideoFramerateVFR", FALSE);
     }
-    else if (strcmp(mode, "pfr") == 0)
+    else if (mode != NULL && strcmp(mode, "pfr") == 0)
     {
         ghb_dict_set_bool(settings, "VideoFramerateCFR", FALSE);
         ghb_dict_set_bool(settings, "VideoFrameratePFR", TRUE);
@@ -364,23 +365,12 @@ ghb_preset_to_settings(GhbValue *settings, GhbValue *preset)
         ghb_dict_remove(settings, "x264Option");
     }
 
-    int                 ii, encoder;
-    const char * const *videoPresets;
+    int                 encoder;
     const char         *videoPreset;
 
     encoder      = ghb_get_video_encoder(settings);
-    videoPresets = hb_video_encoder_get_presets(encoder);
     videoPreset  = ghb_dict_get_string(settings, "VideoPreset");
-    for (ii = 0; videoPreset && videoPresets && videoPresets[ii]; ii++)
-    {
-        if (!strcasecmp(videoPreset, videoPresets[ii]))
-        {
-            ghb_dict_set_int(settings, "VideoPresetSlider", ii);
-            break;
-        }
-    }
-    if (videoPreset != NULL)
-        ghb_dict_set_string(settings, "VideoPreset", videoPreset);
+    ghb_set_video_preset(settings, encoder, videoPreset);
 
     char *videoTune;
     char *tune = NULL;
@@ -388,30 +378,33 @@ ghb_preset_to_settings(GhbValue *settings, GhbValue *preset)
     char *tok;
 
     videoTune = g_strdup(ghb_dict_get_string(settings, "VideoTune"));
-    tok = strtok_r(videoTune, ",./-+", &saveptr);
-    ghb_dict_set_bool(settings, "x264FastDecode", FALSE);
-    ghb_dict_set_bool(settings, "x264ZeroLatency", FALSE);
-    while (tok != NULL)
+    if (videoTune != NULL)
     {
-        if (!strcasecmp(tok, "fastdecode"))
+        tok = strtok_r(videoTune, ",./-+", &saveptr);
+        ghb_dict_set_bool(settings, "x264FastDecode", FALSE);
+        ghb_dict_set_bool(settings, "x264ZeroLatency", FALSE);
+        while (tok != NULL)
         {
-            ghb_dict_set_bool(settings, "x264FastDecode", TRUE);
+            if (!strcasecmp(tok, "fastdecode"))
+            {
+                ghb_dict_set_bool(settings, "x264FastDecode", TRUE);
+            }
+            else if (!strcasecmp(tok, "zerolatency"))
+            {
+                ghb_dict_set_bool(settings, "x264ZeroLatency", TRUE);
+            }
+            else if (tune == NULL)
+            {
+                tune = g_strdup(tok);
+            }
+            else
+            {
+                ghb_log("Superfluous tunes! %s", tok);
+            }
+            tok = strtok_r(NULL, ",./-+", &saveptr);
         }
-        else if (!strcasecmp(tok, "zerolatency"))
-        {
-            ghb_dict_set_bool(settings, "x264ZeroLatency", TRUE);
-        }
-        else if (tune == NULL)
-        {
-            tune = g_strdup(tok);
-        }
-        else
-        {
-            ghb_log("Superfluous tunes! %s", tok);
-        }
-        tok = strtok_r(NULL, ",./-+", &saveptr);
+        g_free(videoTune);
     }
-    g_free(videoTune);
     if (tune != NULL)
     {
         ghb_dict_set_string(settings, "VideoTune", tune);
@@ -604,7 +597,14 @@ ghb_get_user_config_dir(gchar *subdir)
     const gchar *dir;
     gchar       *config;
 
-    dir = g_get_user_config_dir();
+    if (override_user_config_dir != NULL)
+    {
+        dir = override_user_config_dir;
+    }
+    else
+    {
+        dir = g_get_user_config_dir();
+    }
     if (!g_file_test(dir, G_FILE_TEST_IS_DIR))
     {
         dir    = g_get_home_dir();
@@ -637,6 +637,12 @@ ghb_get_user_config_dir(gchar *subdir)
         g_strfreev(split);
     }
     return config;
+}
+
+void
+ghb_override_user_config_dir(char *dir)
+{
+    override_user_config_dir = dir;
 }
 
 static void
@@ -676,6 +682,17 @@ presets_add_config_file(const gchar *name)
         int major, minor, micro;
         hb_presets_version(preset, &major, &minor, &micro);
         hb_presets_current_version(&hb_major, &hb_minor, &hb_micro);
+        if (major != hb_major)
+        {
+            // Make a backup whenever the preset version changes
+            config  = ghb_get_user_config_dir(NULL);
+            path    = g_strdup_printf ("%s/presets.%d.%d.%d.json",
+                            config, major, minor, micro);
+            hb_value_write_json(preset, path);
+            g_free(config);
+            g_free(path);
+        }
+
         if (major > hb_major)
         {
             // Change in major indicates non-backward compatible preset changes.
@@ -685,28 +702,16 @@ presets_add_config_file(const gchar *name)
             return -2;
         }
 
-        hb_value_t *backup = hb_value_dup(preset);
-        int result = hb_presets_import(preset);
-        if (result)
-        {
-            // hb_presets_import modified the preset.  So make a backup
-            // of the original.
-            config  = ghb_get_user_config_dir(NULL);
-            path    = g_strdup_printf ("%s/presets.%d.%d.%d.json",
-                            config, major, minor, micro);
-            hb_value_write_json(backup, path);
-            g_free(config);
-            g_free(path);
-        }
-        hb_value_free(&backup);
-
-        hb_presets_add(preset);
+        hb_value_t *imported;
+        hb_presets_import(preset, &imported);
+        hb_presets_add(imported);
         if (major != hb_major || minor != hb_minor || micro != hb_micro)
         {
             // Reload hb builtin presets
             hb_presets_builtin_update();
             store_presets();
         }
+        hb_value_free(&imported);
         hb_value_free(&preset);
         return 0;
     }
@@ -1605,7 +1610,7 @@ static void
 settings_save(signal_user_data_t *ud, hb_preset_index_t *path, const char *name)
 {
     GhbValue *dict;
-    gboolean  replace = FALSE;
+    gboolean  replace = FALSE, def = FALSE;
 
     dict = hb_preset_get(path);
     if (dict != NULL)
@@ -1614,6 +1619,7 @@ settings_save(signal_user_data_t *ud, hb_preset_index_t *path, const char *name)
         int         type;
         const char *s;
 
+        def       = ghb_dict_get_bool(dict, "Default");
         is_folder = ghb_dict_get_bool(dict, "Folder");
         type      = ghb_dict_get_int(dict, "Type");
         s         = ghb_dict_get_string(dict, "PresetName");
@@ -1667,6 +1673,8 @@ settings_save(signal_user_data_t *ud, hb_preset_index_t *path, const char *name)
     free(new_name);
     if (replace)
     {
+        // If we are replacing the default preset, re-mark it as default
+        ghb_dict_set_bool(dict, "Default", def);
         // Already exists, update its description
         if (hb_preset_set(path, dict) >= 0)
         {
@@ -2479,6 +2487,7 @@ presets_list_selection_changed_cb(GtkTreeSelection *selection, signal_user_data_
             ghb_load_post_settings(ud);
         }
         gtk_widget_set_sensitive(widget, TRUE);
+        free(path);
     }
     else
     {
@@ -2510,6 +2519,7 @@ presets_default_clicked_cb(GtkWidget *xwidget, signal_user_data_t *ud)
         if (dict != NULL && !ghb_dict_get_bool(dict, "Folder"))
         {
             ghb_presets_list_clear_default(ud);
+            hb_presets_clear_default();
             ghb_dict_set_bool(dict, "Default", 1);
             ghb_presets_list_show_default(ud);
             store_presets();

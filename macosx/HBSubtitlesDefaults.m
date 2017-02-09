@@ -6,6 +6,7 @@
 
 #import "HBSubtitlesDefaults.h"
 #import "HBCodingUtilities.h"
+#import "HBMutablePreset.h"
 
 @implementation HBSubtitlesDefaults
 
@@ -126,6 +127,11 @@
 
     self.burnInDVDSubtitles = [preset[@"SubtitleBurnDVDSub"] boolValue];
     self.burnInBluraySubtitles = [preset[@"SubtitleBurnBDSub"] boolValue];
+}
+
+- (void)applyPreset:(HBPreset *)preset jobSettings:(NSDictionary *)settings
+{
+    [self applyPreset:preset];
 }
 
 - (void)writeToPreset:(HBMutablePreset *)preset

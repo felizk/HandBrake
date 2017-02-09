@@ -1,6 +1,6 @@
 /* decsrtsub.c
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -180,18 +180,24 @@ void hb_srt_to_ssa(hb_buffer_t *sub_in, int line)
             ssa = (char*)sub_in->data;
             if (srt[ii] == '\r')
             {
-                ssa[pos++] = '\\';
-                ssa[pos++] = 'N';
-                ii++;
-                if (srt[ii] == '\n')
+                if (srt[ii + 1] == '\n')
                 {
                     ii++;
                 }
+                if (srt[ii + 1] != 0)
+                {
+                    ssa[pos++] = '\\';
+                    ssa[pos++] = 'N';
+                }
+                ii++;
             }
             else if (srt[ii] == '\n')
             {
-                ssa[pos++] = '\\';
-                ssa[pos++] = 'N';
+                if (srt[ii + 1] != 0)
+                {
+                    ssa[pos++] = '\\';
+                    ssa[pos++] = 'N';
+                }
                 ii++;
             }
             else
@@ -251,10 +257,7 @@ static int utf8_fill( hb_work_private_t * pv )
             pv->end = bytes;
             if( bytes == 0 )
             {
-                if( conversion )
-                    return 1;
-                else
-                    return 0;
+                return conversion;
             }
         }
 
@@ -263,8 +266,10 @@ static int utf8_fill( hb_work_private_t * pv )
         in_size = pv->end - pv->pos;
 
         retval = iconv( pv->iconv_context, &p, &in_size, &q, &out_size);
-        if( q != pv->utf8_buf + pv->utf8_pos )
+        if (q != pv->utf8_buf + pv->utf8_end)
+        {
             conversion = 1;
+        }
 
         pv->utf8_end = q - pv->utf8_buf;
         pv->pos = p - pv->buf;
@@ -275,6 +280,11 @@ static int utf8_fill( hb_work_private_t * pv )
             if (buf[0] == 0xef && buf[1] == 0xbb && buf[2] == 0xbf)
             {
                 pv->utf8_pos = 3;
+                if (pv->utf8_pos == pv->utf8_end)
+                {
+                    // If only the bom was converted, indicate no conversion
+                    conversion = 0;
+                }
             }
             pv->utf8_bom_skipped = 1;
         }
@@ -288,10 +298,7 @@ static int utf8_fill( hb_work_private_t * pv )
             bytes = fread( pv->buf + pv->end, 1, 1024 - pv->end, pv->file );
             if( bytes == 0 )
             {
-                if( !conversion )
-                    return 0;
-                else
-                    return 1;
+                return conversion;
             }
             pv->end += bytes;
         } else if ( ( retval == -1 ) && ( errno == EILSEQ ) )
@@ -473,14 +480,14 @@ static hb_buffer_t *srt_read( hb_work_private_t *pv )
             resync = 0;
             if (*pv->current_entry.text != '\0')
             {
-                long length;
+                long length = 0;
                 char *p, *q;
                 uint64_t start_time = ( pv->current_entry.start +
                                         pv->subtitle->config.offset ) * 90;
                 uint64_t stop_time = ( pv->current_entry.stop +
                                        pv->subtitle->config.offset ) * 90;
 
-                if( !( start_time > pv->start_time && stop_time < pv->stop_time ) )
+                if( !( start_time >= pv->start_time && stop_time < pv->stop_time ) )
                 {
                     hb_deep_log( 3, "Discarding SRT at time start %"PRId64", stop %"PRId64, start_time, stop_time);
                     memset( &pv->current_entry, 0, sizeof( srt_entry_t ) );
@@ -489,27 +496,25 @@ static hb_buffer_t *srt_read( hb_work_private_t *pv )
                     continue;
                 }
 
-                length = strlen( pv->current_entry.text );
-
                 for (q = p = pv->current_entry.text; *p != '\0'; p++)
                 {
-                    if (*p == '\r')
+                    if (*p == '\r' || *p == '\n')
                     {
-                        if (*(p + 1) == '\n' || *(p + 1) == '\r' ||
-                            *(p + 1) == '\0')
+                        // sanitize newline codes to a single '\n'
+                        // and delete any newline at the end of the subtitle
+                        if (*(p + 1) != '\n' && *(p + 1) != '\r' &&
+                            *(p + 1) != '\0')
                         {
-                            // followed by line break or last character, skip it
-                            length--;
-                            continue;
+                            *q   = '\n';
+                            q++;
+                            length++;
                         }
-                        // replace '\r' with '\n'
-                        *q   = '\n';
-                        q++;
                     }
                     else
                     {
                         *q = *p;
                         q++;
+                        length++;
                     }
                 }
                 *q = '\0';
@@ -539,40 +544,38 @@ static hb_buffer_t *srt_read( hb_work_private_t *pv )
     hb_buffer_t *buffer = NULL;
     if (*pv->current_entry.text != '\0')
     {
-        long length;
+        long length = 0;
         char *p, *q;
         uint64_t start_time = ( pv->current_entry.start +
                                 pv->subtitle->config.offset ) * 90;
         uint64_t stop_time = ( pv->current_entry.stop +
                                pv->subtitle->config.offset ) * 90;
 
-        if( !( start_time > pv->start_time && stop_time < pv->stop_time ) )
+        if( !( start_time >= pv->start_time && stop_time < pv->stop_time ) )
         {
             hb_deep_log( 3, "Discarding SRT at time start %"PRId64", stop %"PRId64, start_time, stop_time);
             memset( &pv->current_entry, 0, sizeof( srt_entry_t ) );
             return NULL;
         }
 
-        length = strlen( pv->current_entry.text );
-
         for (q = p = pv->current_entry.text; *p != '\0'; p++)
         {
-            if (*p == '\r')
+            if (*p == '\r' || *p == '\n')
             {
-                if (*(p + 1) == '\n' || *(p + 1) == '\r' || *(p + 1) == '\0')
+                // sanitize newline codes to a single '\n'
+                // and delete any newline at the end of the subtitle
+                if (*(p + 1) != '\n' && *(p + 1) != '\r' && *(p + 1) != '\0')
                 {
-                    // followed by line break or last character, skip it
-                    length--;
-                    continue;
+                    *q   = '\n';
+                    q++;
+                    length++;
                 }
-                // replace '\r' with '\n'
-                *q   = '\n';
-                q++;
             }
             else
             {
                 *q = *p;
                 q++;
+                length++;
             }
         }
         *q = '\0';

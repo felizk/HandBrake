@@ -1,6 +1,6 @@
 /* enctheora.c
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -77,7 +77,7 @@ int enctheoraInit( hb_work_object_t * w, hb_job_t * job )
     ti.aspect_denominator = job->par.den;
     ti.colorspace = TH_CS_UNSPECIFIED;
     ti.pixel_fmt = TH_PF_420;
-    if (job->vquality < 0.0)
+    if (job->vquality <= HB_INVALID_VIDEO_QUALITY)
     {
         ti.target_bitrate = job->vbitrate * 1000;
         ti.quality = 0;
@@ -358,7 +358,12 @@ int enctheoraWork( hb_work_object_t * w, hb_buffer_t ** buf_in,
     buf->f.fmt = AV_PIX_FMT_YUV420P;
     buf->f.width = frame_width;
     buf->f.height = frame_height;
-    buf->s.frametype = ( th_packet_iskeyframe(&op) ) ? HB_FRAME_KEY : HB_FRAME_REF;
+    buf->s.flags = HB_FLAG_FRAMETYPE_REF;
+    buf->s.frametype = HB_FRAME_I;
+    if (th_packet_iskeyframe(&op))
+    {
+        buf->s.flags |= HB_FLAG_FRAMETYPE_KEY;
+    }
     buf->s.start    = in->s.start;
     buf->s.stop     = in->s.stop;
     buf->s.duration = in->s.stop - in->s.start;

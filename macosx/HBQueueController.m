@@ -6,26 +6,21 @@
 
 #import "HBQueueController.h"
 
-#import "HBCore.h"
 #import "HBController.h"
 #import "HBAppDelegate.h"
 
 #import "HBQueueOutlineView.h"
-#import "HBUtilities.h"
 
-#import "HBJob.h"
-#import "HBJob+UIAdditions.h"
-
-#import "HBStateFormatter.h"
-
-#import "HBDistributedArray.h"
 #import "NSArray+HBAdditions.h"
+#import "HBUtilities.h"
 
 #import "HBDockTile.h"
 
 #import "HBOutputRedirect.h"
 #import "HBJobOutputFileWriter.h"
 #import "HBPreferencesController.h"
+
+@import HandBrakeKit;
 
 // Pasteboard type for or drag operations
 #define DragDropSimplePboardType    @"HBQueueCustomOutlineViewPboardType"
@@ -76,9 +71,10 @@
 
         // Init a separate instance of libhb for the queue
         _core = [[HBCore alloc] initWithLogLevel:loggingLevel name:@"QueueCore"];
+        _core.automaticallyPreventSleep = NO;
 
         // Load the queue from disk.
-        _jobs = [[HBDistributedArray alloc] initWithURL:queueURL];
+        _jobs = [[HBDistributedArray alloc] initWithURL:queueURL class:[HBJob class]];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(reloadQueue) name:HBDistributedArrayChanged object:_jobs];
     }
 
@@ -228,7 +224,7 @@
 
     for (HBJob *item in self.jobs)
     {
-        if ([item.destURL isEqualTo:url])
+        if ([item.completeOutputURL isEqualTo:url])
         {
             return YES;
         }
@@ -309,7 +305,10 @@
 
 - (void)reloadQueueItemsAtIndexes:(NSIndexSet *)indexes
 {
-    [self.outlineView reloadDataForRowIndexes:indexes columnIndexes:[NSIndexSet indexSetWithIndex:0]];
+    NSMutableIndexSet *outlineIndexes = [NSMutableIndexSet indexSet];
+    [outlineIndexes addIndex:0];
+    [outlineIndexes addIndex:2];
+    [self.outlineView reloadDataForRowIndexes:indexes columnIndexes:outlineIndexes];
     [self updateQueueStats];
 }
 
@@ -532,7 +531,7 @@
     }
 
     self.countTextField.stringValue = string;
-    [self.controller setQueueState:string];
+    [self.controller setQueueState:pendingCount];
 
     self.pendingItemsCount = pendingCount;
     self.completedItemsCount = completedCount;
@@ -540,6 +539,18 @@
 
 #pragma mark -
 #pragma mark Queue Job Processing
+
+#define ALMOST_5GB 5000000000
+
+- (BOOL)_isDiskSpaceLowAtURL:(NSURL *)url
+{
+    NSDictionary *dict = [[NSFileManager defaultManager] attributesOfFileSystemForPath:url.URLByDeletingLastPathComponent.path error:NULL];
+    long long freeSpace = [dict[NSFileSystemFreeSize] longLongValue];
+    if (freeSpace < ALMOST_5GB) {
+        return YES;
+    }
+    return NO;
+}
 
 /**
  * Used to get the next pending queue item and return it if found
@@ -567,23 +578,36 @@
     // since we have completed an encode, we go to the next
     if (self.stop)
     {
+        [HBUtilities writeToActivityLog:"Queue manually stopped"];
+
         self.stop = NO;
+        [self.core allowSleep];
     }
     else
     {
         // Check to see if there are any more pending items in the queue
         HBJob *nextJob = [self getNextPendingQueueItem];
 
+        if (nextJob && [self _isDiskSpaceLowAtURL:nextJob.outputURL])
+        {
+            // Disk space is low, show an alert
+            [HBUtilities writeToActivityLog:"Queue Stopped, low space on destination disk"];
+
+            [self queueLowDiskSpaceAlert];
+        }
         // If we still have more pending items in our queue, lets go to the next one
-        if (nextJob)
+        else if (nextJob)
         {
             // now we mark the queue item as working so another instance can not come along and try to scan it while we are scanning
             nextJob.state = HBJobStateWorking;
 
             // Tell HB to output a new activity log file for this encode
             self.currentLog = [[HBJobOutputFileWriter alloc] initWithJob:nextJob];
-            [[HBOutputRedirect stderrRedirect] addListener:self.currentLog];
-            [[HBOutputRedirect stdoutRedirect] addListener:self.currentLog];
+            if (self.currentLog)
+            {
+                [[HBOutputRedirect stderrRedirect] addListener:self.currentLog];
+                [[HBOutputRedirect stdoutRedirect] addListener:self.currentLog];
+            }
 
             self.currentJob = nextJob;
             [self reloadQueueItemAtIndex:[self.jobs indexOfObject:nextJob]];
@@ -601,6 +625,8 @@
             // Since there are no more items to encode, go to queueCompletedAlerts
             // for user specified alerts after queue completed
             [self queueCompletedAlerts];
+
+            [self.core allowSleep];
         }
     }
     [self.jobs commit];
@@ -619,12 +645,11 @@
     self.currentLog = nil;
 
     // Check to see if the encode state has not been cancelled
-    // to determine if we should check for encode done notifications.
+    // to determine if we should send it to external app.
     if (result != HBCoreResultCancelled)
     {
-        [self jobCompletedAlerts:job];
         // Send to tagger
-        [self sendToExternalApp:job.destURL];
+        [self sendToExternalApp:job];
     }
 
     // Mark the encode just finished
@@ -646,6 +671,28 @@
     }
     [self.window.toolbar validateVisibleItems];
     [self.jobs commit];
+
+    // Update UI
+    NSString *info = nil;
+    switch (result) {
+        case HBCoreResultDone:
+            info = NSLocalizedString(@"Encode Finished.", @"");
+            [self jobCompletedAlerts:job result:result];
+            break;
+        case HBCoreResultCancelled:
+            info = NSLocalizedString(@"Encode Cancelled.", @"");
+            break;
+        default:
+            info = NSLocalizedString(@"Encode Failed.", @"");
+            [self jobCompletedAlerts:job result:result];
+            break;
+    }
+    self.progressTextField.stringValue = info;
+    [self.controller setQueueInfo:info progress:1.0 hidden:YES];
+
+    // Restore dock icon
+    [self.dockTile updateDockIcon:-1.0 withETA:@""];
+    self.dockIconProgress = 0;
 }
 
 /**
@@ -654,12 +701,11 @@
 - (void)encodeJob:(HBJob *)job
 {
     NSParameterAssert(job);
-    HBStateFormatter *formatter = [[HBStateFormatter alloc] init];
 
     // Progress handler
-    void (^progressHandler)(HBState state, hb_state_t hb_state) = ^(HBState state, hb_state_t hb_state)
+    void (^progressHandler)(HBState state, HBProgress progress, NSString *info) = ^(HBState state, HBProgress progress, NSString *info)
     {
-        NSString *status = [formatter stateToString:hb_state title:nil];
+        NSString *status = info;
         self.progressTextField.stringValue = status;
         [self.controller setQueueInfo:status progress:0 hidden:NO];
     };
@@ -698,23 +744,19 @@
     // Reset the title in the job.
     job.title = self.core.titles[0];
 
-    HBStateFormatter *converter = [[HBStateFormatter alloc] init];
-    NSString *destinationName = job.destURL.lastPathComponent;
+    HBStateFormatter *formatter = [[HBStateFormatter alloc] init];
+    formatter.title = job.outputFileName;
+    self.core.stateFormatter = formatter;
 
     // Progress handler
-    void (^progressHandler)(HBState state, hb_state_t hb_state) = ^(HBState state, hb_state_t hb_state)
+    void (^progressHandler)(HBState state, HBProgress progress, NSString *info) = ^(HBState state, HBProgress progress, NSString *info)
     {
-        NSString *string = [converter stateToString:hb_state title:destinationName];
-        CGFloat progress = [converter stateToPercentComplete:hb_state];
-
         if (state == HBStateWorking)
         {
             // Update dock icon
-            if (self.dockIconProgress < 100.0 * progress)
+            if (self.dockIconProgress < 100.0 * progress.percent)
             {
-                #define p hb_state.param.working
-                [self.dockTile updateDockIcon:progress hours:p.hours minutes:p.minutes seconds:p.seconds];
-                #undef p
+                [self.dockTile updateDockIcon:progress.percent hours:progress.hours minutes:progress.minutes seconds:progress.seconds];
                 self.dockIconProgress += dockTileUpdateFrequency;
             }
         }
@@ -724,21 +766,13 @@
         }
 
         // Update text field
-        self.progressTextField.stringValue = string;
-        [self.controller setQueueInfo:string progress:progress hidden:NO];
+        self.progressTextField.stringValue = info;
+        [self.controller setQueueInfo:info progress:progress.percent hidden:NO];
     };
 
     // Completion handler
     void (^completionHandler)(HBCoreResult result) = ^(HBCoreResult result)
     {
-        NSString *info = NSLocalizedString(@"Encode Finished.", @"");
-        self.progressTextField.stringValue = info;
-        [self.controller setQueueInfo:info progress:1.0 hidden:YES];
-
-        // Restore dock icon
-        [self.dockTile updateDockIcon:-1.0 withETA:@""];
-        self.dockIconProgress = 0;
-
         [self completedJob:job result:result];
         [self encodeNextQueueItem];
     };
@@ -804,37 +838,48 @@
              GROWL_NOTIFICATIONS_DEFAULT: @[SERVICE_NAME]};
 }
 
-- (void)showDoneNotification:(NSURL *)fileURL
+- (void)showNotificationWithTitle:(NSString *)title description:(NSString *)description url:(NSURL *)fileURL
 {
-    // This end of encode action is called as each encode rolls off of the queue
-    // Setup the Growl stuff
-    NSString *growlMssg = [NSString stringWithFormat:@"your HandBrake encode %@ is done!", fileURL.lastPathComponent];
-    [GrowlApplicationBridge notifyWithTitle:@"Put down that cocktail…"
-                                description:growlMssg
+    [GrowlApplicationBridge notifyWithTitle:title
+                                description:description
                            notificationName:SERVICE_NAME
                                    iconData:nil
                                    priority:0
-                                   isSticky:1
-                               clickContext:nil];
+                                   isSticky:YES
+                               clickContext:fileURL.path];
+}
+
+- (void)growlNotificationWasClicked:(id)clickContext
+{
+    // Show the file in Finder when a done notification was clicked.
+    if ([clickContext isKindOfClass:[NSString class]] && [clickContext length])
+    {
+        NSURL *fileURL = [NSURL fileURLWithPath:clickContext];
+        [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[fileURL]];
+    }
 }
 
 /**
  *  Sends the URL to the external app
  *  selected in the preferences.
  *
- *  @param fileURL the URL of the file to send
+ *  @param job the job of the file to send
  */
-- (void)sendToExternalApp:(NSURL *)fileURL
+- (void)sendToExternalApp:(HBJob *)job
 {
     // This end of encode action is called as each encode rolls off of the queue
     if ([[NSUserDefaults standardUserDefaults] boolForKey:@"HBSendToAppEnabled"] == YES)
     {
+#ifdef __SANDBOX_ENABLED__
+        BOOL accessingSecurityScopedResource = [job.outputURL startAccessingSecurityScopedResource];
+#endif
+
         NSWorkspace *workspace = [NSWorkspace sharedWorkspace];
         NSString *app = [workspace fullPathForApplication:[[NSUserDefaults standardUserDefaults] objectForKey:@"HBSendToApp"]];
 
         if (app)
         {
-            if (![workspace openFile:fileURL.path withApplication:app])
+            if (![workspace openFile:job.completeOutputURL.path withApplication:app])
             {
                 [HBUtilities writeToActivityLog:"Failed to send file to: %s", app];
             }
@@ -843,13 +888,20 @@
         {
             [HBUtilities writeToActivityLog:"Send file to: app not found"];
         }
+
+#ifdef __SANDBOX_ENABLED__
+        if (accessingSecurityScopedResource)
+        {
+            [job.outputURL stopAccessingSecurityScopedResource];
+        }
+#endif
     }
 }
 
 /**
  *  Runs the alert for a single job
  */
-- (void)jobCompletedAlerts:(HBJob *)job
+- (void)jobCompletedAlerts:(HBJob *)job result:(HBCoreResult)result
 {
     // Both the Notification and Sending to tagger can be done as encodes roll off the queue
     if ([[NSUserDefaults standardUserDefaults] integerForKey:@"HBAlertWhenDone"] == HBDoneActionNotification ||
@@ -860,7 +912,26 @@
         {
             NSBeep();
         }
-        [self showDoneNotification:job.destURL];
+
+        NSString *title;
+        NSString *description;
+        if (result == HBCoreResultDone)
+        {
+            title = NSLocalizedString(@"Put down that cocktail…", nil);
+            description = [NSString stringWithFormat:NSLocalizedString(@"your HandBrake encode %@ is done!", nil),
+                                     job.outputFileName];
+
+        }
+        else
+        {
+            title = NSLocalizedString(@"Encode failed", nil);
+            description = [NSString stringWithFormat:NSLocalizedString(@"your HandBrake encode %@ couldn't be completed.", nil),
+                           job.outputFileName];
+        }
+
+        [self showNotificationWithTitle:title
+                            description:description
+                                    url:job.completeOutputURL];
     }
 }
 
@@ -904,6 +975,15 @@
         NSAppleScript *scriptObject = [[NSAppleScript alloc] initWithSource:@"tell application \"Finder\" to shut down"];
         [scriptObject executeAndReturnError: &errorDict];
     }
+}
+
+- (void)queueLowDiskSpaceAlert
+{
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:NSLocalizedString(@"Your destination disk is almost full.", @"")];
+    [alert setInformativeText:NSLocalizedString(@"You need to make more space available on your destination disk.", @"")];
+    [NSApp requestUserAttention:NSCriticalRequest];
+    [alert runModal];
 }
 
 #pragma mark - Queue Item Controls
@@ -1001,7 +1081,7 @@
 
     NSUInteger currentIndex = [targetedRows firstIndex];
     while (currentIndex != NSNotFound) {
-        NSURL *url = [[self.jobs objectAtIndex:currentIndex] destURL];
+        NSURL *url = [[self.jobs objectAtIndex:currentIndex] completeOutputURL];
         [urls addObject:url];
         currentIndex = [targetedRows indexGreaterThanIndex:currentIndex];
     }
@@ -1055,7 +1135,7 @@
 - (IBAction)rip:(id)sender
 {
     // Rip or Cancel ?
-    if (self.core.state == HBStateWorking || self.core.state == HBStatePaused)
+    if (self.core.state == HBStateWorking || self.core.state == HBStatePaused || self.core.state == HBStateSearching)
     {
         [self cancelRip:sender];
     }
@@ -1066,6 +1146,7 @@
         // or shut down when encoding is finished
         [self remindUserOfSleepOrShutdown];
 
+        [self.core preventSleep];
         [self encodeNextQueueItem];
     }
 }
@@ -1142,10 +1223,12 @@
     if (s == HBStatePaused)
     {
         [self.core resume];
+        [self.core preventSleep];
     }
     else if (s == HBStateWorking || s == HBStateMuxing)
     {
         [self.core pause];
+        [self.core allowSleep];
     }
 }
 

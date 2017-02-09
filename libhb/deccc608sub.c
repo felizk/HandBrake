@@ -1,6 +1,6 @@
 /* deccc608sub.c
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -23,16 +23,6 @@
 static int debug_608 = 0;
 static int cc_channel = 1;
 static int subs_delay = 0;
-
-/*
- * Get the time of the last buffer that we have received.
- */
-static int64_t get_last_pts(struct s_write *wb)
-{
-    return wb->last_pts;
-}
-
-#define fatal(N, ...) // N
 
 int rowdata[] = {11,-1,1,2,3,4,12,13,14,15,5,6,7,8,9,10};
 // Relationship between the first PAC byte and the row number
@@ -143,6 +133,7 @@ static int general_608_init (struct s_write *wb)
 
     hb_buffer_list_clear(&wb->list);
     wb->last_pts = 0;
+    wb->last_scr_sequence = 0;
     return 0;
 }
 
@@ -741,10 +732,11 @@ static struct eia608_screen *get_writing_buffer(struct s_write *wb)
         case MODE_ROLLUP_2: // Write directly to screen
         case MODE_ROLLUP_3:
         case MODE_ROLLUP_4:
+        case MODE_TEXT:
             use_buffer = get_current_visible_buffer(wb);
             break;
         default:
-            fatal (EXIT_BUG_BUG, "Caption mode has an illegal value at get_writing_buffer(), this is a bug.\n");
+            hb_error("Caption mode has an illegal value at get_writing_buffer(), this is a bug.");
     }
     return use_buffer;
 }
@@ -754,17 +746,20 @@ static void write_char(const unsigned char c, struct s_write *wb)
     if (wb->data608->mode != MODE_TEXT)
     {
         struct eia608_screen * use_buffer = get_writing_buffer(wb);
-        /* hb_log ("\rWriting char [%c] at %s:%d:%d\n",c,
-        use_buffer == &wb->data608->buffer1?"B1":"B2",
-        wb->data608->cursor_row,wb->data608->cursor_column); */
-        use_buffer->characters[wb->data608->cursor_row][wb->data608->cursor_column] = c;
-        use_buffer->colors[wb->data608->cursor_row][wb->data608->cursor_column] = wb->data608->color;
-        use_buffer->fonts[wb->data608->cursor_row][wb->data608->cursor_column] = wb->data608->font;
-        use_buffer->row_used[wb->data608->cursor_row] = 1;
-        use_buffer->empty = 0;
-        if (wb->data608->cursor_column < 31)
-            wb->data608->cursor_column++;
-        use_buffer->dirty = 1;
+        if (use_buffer != NULL)
+        {
+            /* hb_log ("\rWriting char [%c] at %s:%d:%d\n",c,
+            use_buffer == &wb->data608->buffer1?"B1":"B2",
+            wb->data608->cursor_row,wb->data608->cursor_column); */
+            use_buffer->characters[wb->data608->cursor_row][wb->data608->cursor_column] = c;
+            use_buffer->colors[wb->data608->cursor_row][wb->data608->cursor_column] = wb->data608->color;
+            use_buffer->fonts[wb->data608->cursor_row][wb->data608->cursor_column] = wb->data608->font;
+            use_buffer->row_used[wb->data608->cursor_row] = 1;
+            use_buffer->empty = 0;
+            if (wb->data608->cursor_column < 31)
+                wb->data608->cursor_column++;
+            use_buffer->dirty = 1;
+        }
     }
 
 }
@@ -804,7 +799,7 @@ static int write_cc_buffer_as_ssa(struct eia608_screen *data,
     int wrote_something = 0;
     int i;
     int64_t ms_start = wb->data608->current_visible_start_ms;
-    //int64_t ms_end = get_last_pts(wb) + subs_delay;
+    //int64_t ms_end = wb->last_pts + subs_delay;
 
     ms_start += subs_delay;
     if (ms_start<0) // Drop screens that because of subs_delay start too early
@@ -952,6 +947,7 @@ static int write_cc_buffer_as_ssa(struct eia608_screen *data,
         buffer->s.frametype = HB_FRAME_SUBTITLE;
         buffer->s.start = ms_start;
         buffer->s.stop = AV_NOPTS_VALUE;
+        buffer->s.scr_sequence = wb->data608->current_visible_scr_sequence;
         sprintf((char*)buffer->data, "%d,,Default,,0,0,0,,", ++wb->line);
         len = strlen((char*)buffer->data);
         memcpy(buffer->data + len, wb->enc_buffer, wb->enc_buffer_used);
@@ -961,11 +957,12 @@ static int write_cc_buffer_as_ssa(struct eia608_screen *data,
     }
     else if (wb->clear_sub_needed)
     {
-        hb_buffer_t *buffer = hb_buffer_init(1);
+        hb_buffer_t *buffer = hb_buffer_init(0);
         buffer->s.frametype = HB_FRAME_SUBTITLE;
-        buffer->s.start = ms_start;
-        buffer->s.stop = ms_start;
-        buffer->data[0] = 0;
+        buffer->s.flags     = HB_BUF_FLAG_EOS;
+        buffer->s.start     = ms_start;
+        buffer->s.stop      = ms_start;
+        buffer->s.scr_sequence = wb->data608->current_visible_scr_sequence;
         hb_buffer_list_append(&wb->list, buffer);
         wb->clear_sub_needed = 0;
     }
@@ -1218,9 +1215,12 @@ static void handle_command(unsigned char c1, const unsigned char c2,
             {
                 struct eia608_screen *data;
                 data = get_writing_buffer(wb);
-                wb->data608->cursor_column--;
-                data->characters[wb->data608->cursor_row][wb->data608->cursor_column] = ' ';
-                data->dirty = 1;
+                if (data != NULL)
+                {
+                    wb->data608->cursor_column--;
+                    data->characters[wb->data608->cursor_row][wb->data608->cursor_column] = ' ';
+                    data->dirty = 1;
+                }
             }
             break;
         case COM_TABOFFSET1:
@@ -1239,11 +1239,13 @@ static void handle_command(unsigned char c1, const unsigned char c2,
             break;
         case COM_RESUMECAPTIONLOADING:
             wb->data608->mode=MODE_POPUP;
-            wb->data608->current_visible_start_ms = get_last_pts(wb);
+            wb->data608->current_visible_start_ms = wb->last_pts;
+            wb->data608->current_visible_scr_sequence = wb->last_scr_sequence;
             break;
         case COM_RESUMETEXTDISPLAY:
             wb->data608->mode=MODE_TEXT;
-            wb->data608->current_visible_start_ms = get_last_pts(wb);
+            wb->data608->current_visible_start_ms = wb->last_pts;
+            wb->data608->current_visible_scr_sequence = wb->last_scr_sequence;
             break;
         case COM_ROLLUP2:
             if (wb->data608->rollup_base_row + 1 < 2)
@@ -1267,7 +1269,8 @@ static void handle_command(unsigned char c1, const unsigned char c2,
                 handle_command(0x14, 0x2D, wb);
                 wb->rollup_cr = 1;
             }
-            wb->data608->current_visible_start_ms = get_last_pts(wb);
+            wb->data608->current_visible_start_ms = wb->last_pts;
+            wb->data608->current_visible_scr_sequence = wb->last_scr_sequence;
             wb->data608->mode=MODE_ROLLUP_2;
             erase_memory (wb, 0);
             wb->data608->cursor_column = 0;
@@ -1294,7 +1297,8 @@ static void handle_command(unsigned char c1, const unsigned char c2,
                 handle_command(0x14, 0x2D, wb);
                 wb->rollup_cr = 1;
             }
-            wb->data608->current_visible_start_ms = get_last_pts(wb);
+            wb->data608->current_visible_start_ms = wb->last_pts;
+            wb->data608->current_visible_scr_sequence = wb->last_scr_sequence;
             wb->data608->mode=MODE_ROLLUP_3;
             erase_memory (wb, 0);
             wb->data608->cursor_column = 0;
@@ -1321,7 +1325,8 @@ static void handle_command(unsigned char c1, const unsigned char c2,
                 handle_command(0x14, 0x2D, wb);
                 wb->rollup_cr = 1;
             }
-            wb->data608->current_visible_start_ms = get_last_pts(wb);
+            wb->data608->current_visible_start_ms = wb->last_pts;
+            wb->data608->current_visible_scr_sequence = wb->last_scr_sequence;
             wb->data608->mode = MODE_ROLLUP_4;
             wb->data608->cursor_column = 0;
             wb->data608->cursor_row = wb->data608->rollup_base_row;
@@ -1335,14 +1340,16 @@ static void handle_command(unsigned char c1, const unsigned char c2,
             if (wb->rollup_cr && is_current_row_empty(wb))
             {
                 wb->rollup_cr = 0;
-                wb->data608->current_visible_start_ms = get_last_pts(wb);
+                wb->data608->current_visible_start_ms = wb->last_pts;
+                wb->data608->current_visible_scr_sequence = wb->last_scr_sequence;
                 break;
             }
             if (write_cc_buffer(wb))
                 wb->data608->screenfuls_counter++;
             roll_up(wb);
             wb->data608->cursor_column = 0;
-            wb->data608->current_visible_start_ms = get_last_pts(wb);
+            wb->data608->current_visible_start_ms = wb->last_pts;
+            wb->data608->current_visible_scr_sequence = wb->last_scr_sequence;
             break;
         case COM_ERASENONDISPLAYEDMEMORY:
             erase_memory (wb,0);
@@ -1360,7 +1367,8 @@ static void handle_command(unsigned char c1, const unsigned char c2,
 
             // the last pts is the time to remove the previously 
             // displayed CC from the display
-            wb->data608->current_visible_start_ms = get_last_pts(wb);
+            wb->data608->current_visible_start_ms = wb->last_pts;
+            wb->data608->current_visible_scr_sequence = wb->last_scr_sequence;
 
             // Write "clear" subtitle if necessary
             struct eia608_screen *data;
@@ -1374,7 +1382,8 @@ static void handle_command(unsigned char c1, const unsigned char c2,
             if (wb->data608->mode == MODE_POPUP)
             {
                 swap_visible_buffer(wb);
-                wb->data608->current_visible_start_ms = get_last_pts(wb);
+                wb->data608->current_visible_start_ms = wb->last_pts;
+                wb->data608->current_visible_scr_sequence = wb->last_scr_sequence;
             }
             if (write_cc_buffer(wb))
                 wb->data608->screenfuls_counter++;
@@ -1728,7 +1737,7 @@ static void process608(const unsigned char *data, int length,
 
             if ( debug_608 && !textprinted && wb->data608->channel==cc_channel )
             {   // Current FTS information after the characters are shown
-                //hb_log("Current FTS: %s\n", print_mstime(get_last_pts()));
+                //hb_log("Current FTS: %s\n", print_mstime(wb->last_pts));
             }
 
             if ((wb->data608->mode == MODE_ROLLUP_2 ||
@@ -1739,7 +1748,8 @@ static void process608(const unsigned char *data, int length,
                 // If we are showing rollup on the fly (direct_rollup)
                 // write a buffer now
                 write_cc_buffer(wb);
-                wb->data608->current_visible_start_ms = get_last_pts(wb);
+                wb->data608->current_visible_start_ms = wb->last_pts;
+                wb->data608->current_visible_scr_sequence = wb->last_scr_sequence;
             }
         }
     }
@@ -1819,6 +1829,7 @@ static int decccWork( hb_work_object_t * w, hb_buffer_t ** buf_in,
     }
 
     pv->cc608->last_pts = in->s.start;
+    pv->cc608->last_scr_sequence = in->s.scr_sequence;
     process608(in->data, in->size, pv->cc608);
 
     /*

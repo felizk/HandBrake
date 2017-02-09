@@ -23,13 +23,9 @@ namespace HandBrakeWPF.ViewModels.Interfaces
         /// </summary>
         void RefreshTask();
 
-        /// <summary>
-        /// Clear the advanced x264 options.
-        /// </summary>
-        void ClearAdvancedSettings();
-
         VideoTune VideoTune { get; set; }
 
         BindingList<VideoTune> VideoTunes { get; }
+
     }
 }

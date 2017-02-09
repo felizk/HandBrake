@@ -43,9 +43,9 @@ namespace HandBrakeWPF.Services.Presets
     {
         #region Private Variables
 
-        public const int ForcePresetReset = 2;
+        public const int ForcePresetReset = 3;
         public static string UserPresetCatgoryName = "User Presets";
-        private readonly string presetFile = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData) + "\\HandBrake\\presets.json";
+        private readonly string presetFile = Path.Combine(DirectoryUtilities.GetUserStoragePath(VersionHelper.IsNightly()), "presets.json");
         private readonly ObservableCollection<Preset> presets = new ObservableCollection<Preset>();
         private readonly IErrorService errorService;
         private readonly IUserSettingService userSettingService;
@@ -142,20 +142,30 @@ namespace HandBrakeWPF.Services.Presets
         {
             if (!string.IsNullOrEmpty(filename))
             {
-                PresetTransportContainer container = HandBrakePresetService.GetPresetFromFile(filename);
+                PresetTransportContainer container = null;
+                try
+                {
+                    container = HandBrakePresetService.GetPresetFromFile(filename);
+                }
+                catch (Exception exc)
+                {
+                    this.errorService.ShowError(Resources.Main_PresetImportFailed, Resources.Main_PresetImportFailedSolution, exc);
+                    return;
+                }
 
                 if (container?.PresetList == null || container.PresetList.Count == 0)
                 {
-                    this.errorService.ShowError(Resources.Main_PresetImportFailed, Resources.Main_PresetImportFailedSolution, string.Empty);
+                    this.errorService.ShowError(Resources.Main_PresetImportFailed, Resources.Main_PresetImportFailedSolution, Resources.NoAdditionalInformation);
                     return;
                 }
 
                 // HBPreset Handling
-                IList<HBPreset> hbPresets = container.PresetList as IList<HBPreset>;
-                if (hbPresets != null)
+                if (container.PresetList != null)
                 {
-                    foreach (var hbPreset in hbPresets)
+                    foreach (var objectPreset in container.PresetList)
                     {
+                        HBPreset hbPreset = JsonConvert.DeserializeObject<HBPreset>(objectPreset.ToString());
+
                         Preset preset = null;
                         try
                         {
@@ -180,7 +190,7 @@ namespace HandBrakeWPF.Services.Presets
                             return;
                         }
 
-                                                if (this.CheckIfPresetExists(preset.Name))
+                        if (this.CheckIfPresetExists(preset.Name))
                         {
                             if (!this.CanUpdatePreset(preset.Name))
                             {
@@ -250,6 +260,21 @@ namespace HandBrakeWPF.Services.Presets
                     break;
                 }
             }
+        }
+
+        /// <summary>
+        /// Replace an existing preset with a modified one.
+        /// </summary>
+        /// <param name="existing">
+        /// The existing.
+        /// </param>
+        /// <param name="replacement">
+        /// The replacement.
+        /// </param>
+        public void Replace(Preset existing, Preset replacement)
+        {
+            this.Remove(existing);
+            this.Add(replacement);
         }
 
         /// <summary>
@@ -367,11 +392,6 @@ namespace HandBrakeWPF.Services.Presets
                     }
 
                     preset.Task.AllowedPassthruOptions = new AllowedPassthru(true); // We don't want to override the built-in preset
-
-                    if (preset.Name == "Normal")
-                    {
-                        preset.IsDefault = true;
-                    }
 
                     this.presets.Add(preset);
                 }
@@ -494,15 +514,23 @@ namespace HandBrakeWPF.Services.Presets
                 // If we don't have a presets file. Create one for first load.
                 if (!File.Exists(this.presetFile))
                 {
-                    this.UpdateBuiltInPresets();
-                    return; // Update built-in presets stores the presets locally, so just return.
+                    // If this is a nightly, and we don't have a presets file, try port the main version if it exists.
+                    string releasePresetFile = Path.Combine(DirectoryUtilities.GetUserStoragePath(false), "presets.json");
+                    if (VersionHelper.IsNightly() && File.Exists(releasePresetFile))
+                    {
+                        File.Copy(releasePresetFile, DirectoryUtilities.GetUserStoragePath(true));
+                    }
+                    else
+                    {
+                        this.UpdateBuiltInPresets();
+                        return; // Update built-in presets stores the presets locally, so just return.
+                    }
                 }
 
                 // Otherwise, we already have a file, so lets try load it.
                 PresetTransportContainer container = null;
                 using (StreamReader reader = new StreamReader(this.presetFile))
                 {
-
                     try
                     {
                         container = JsonConvert.DeserializeObject<PresetTransportContainer>(reader.ReadToEnd());

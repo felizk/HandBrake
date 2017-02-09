@@ -7,11 +7,15 @@
 #import "HBVideo.h"
 #import "HBJob.h"
 #import "HBCodingUtilities.h"
+#import "HBMutablePreset.h"
+
 #include "hb.h"
 
 NSString * const HBVideoChangedNotification = @"HBVideoChangedNotification";
 
 @interface HBVideo ()
+
+@property (nonatomic, readwrite, weak) HBJob *job;
 
 @property (nonatomic, readwrite) double qualityMinValue;
 @property (nonatomic, readwrite) double qualityMaxValue;
@@ -90,6 +94,8 @@ NSString * const HBVideoChangedNotification = @"HBVideoChangedNotification";
 
 - (void)setEncoder:(int)encoder
 {
+    int previousEncoder = _encoder;
+
     if (encoder != _encoder)
     {
         [[self.undo prepareWithInvocationTarget:self] setEncoder:_encoder];
@@ -101,12 +107,13 @@ NSString * const HBVideoChangedNotification = @"HBVideoChangedNotification";
     {
         [self validatePresetsSettings];
         [self validateAdvancedOptions];
+        [self validateVideoOptionExtra:previousEncoder];
     }
 
     [self postChangedNotification];
 }
 
-- (void)setQualityType:(int)qualityType
+- (void)setQualityType:(HBVideoQualityType)qualityType
 {
     if (qualityType != _qualityType)
     {
@@ -146,7 +153,7 @@ NSString * const HBVideoChangedNotification = @"HBVideoChangedNotification";
     [self postChangedNotification];
 }
 
-- (void)setFrameRateMode:(int)frameRateMode
+- (void)setFrameRateMode:(HBVideoFrameRateMode)frameRateMode
 {
     if (frameRateMode != _frameRateMode)
     {
@@ -306,40 +313,15 @@ NSString * const HBVideoChangedNotification = @"HBVideoChangedNotification";
     }
 }
 
-+ (NSSet *)keyPathsForValuesAffectingValueForKey:(NSString *)key
+- (void)validateVideoOptionExtra:(int)previousEncoder
 {
-    NSSet *retval = nil;
-
-    // Tell KVO to reload the presets settings
-    // after a change to the encoder.
-    if ([key isEqualToString:@"presets"] ||
-        [key isEqualToString:@"tunes"] ||
-        [key isEqualToString:@"profiles"] ||
-        [key isEqualToString:@"levels"])
+    if (!((previousEncoder & HB_VCODEC_X264_MASK &&
+        self.encoder & HB_VCODEC_X264_MASK) ||
+        (previousEncoder & HB_VCODEC_X265_MASK &&
+         self.encoder & HB_VCODEC_X265_MASK)))
     {
-        retval = [NSSet setWithObjects:@"encoder", nil];
+        self.videoOptionExtra = @"";
     }
-
-    // Tell KVO to reload the x264 unparse string
-    // after values changes.
-    if ([key isEqualToString:@"unparseOptions"])
-    {
-        retval = [NSSet setWithObjects:@"encoder", @"preset", @"tune", @"profile", @"level",
-                  @"videoOptionExtra", @"fastDecode", @"job.picture.width", @"job.picture.height", nil];
-    }
-
-    if ([key isEqualToString:@"encoders"])
-    {
-        retval = [NSSet setWithObjects:@"job.container", nil];
-    }
-
-    if ([key isEqualToString:@"fastDecodeSupported"] ||
-        [key isEqualToString:@"turboTwoPassSupported"])
-    {
-        retval = [NSSet setWithObjects:@"encoder", nil];
-    }
-
-    return retval;
 }
 
 - (void)setNilValueForKey:(NSString *)key
@@ -348,6 +330,11 @@ NSString * const HBVideoChangedNotification = @"HBVideoChangedNotification";
 }
 
 #pragma mark -
+
++ (NSSet<NSString *> *)keyPathsForValuesAffectingPresets
+{
+    return [NSSet setWithObjects:@"encoder", nil];
+}
 
 - (NSArray *)presets
 {
@@ -364,6 +351,11 @@ NSString * const HBVideoChangedNotification = @"HBVideoChangedNotification";
     }
 
     return [temp copy];
+}
+
++ (NSSet<NSString *> *)keyPathsForValuesAffectingTunes
+{
+    return [NSSet setWithObjects:@"encoder", nil];
 }
 
 - (NSArray *)tunes
@@ -386,6 +378,11 @@ NSString * const HBVideoChangedNotification = @"HBVideoChangedNotification";
     return [temp copy];
 }
 
++ (NSSet<NSString *> *)keyPathsForValuesAffectingProfiles
+{
+    return [NSSet setWithObjects:@"encoder", nil];
+}
+
 - (NSArray *)profiles
 {
     NSMutableArray *temp = [NSMutableArray array];
@@ -401,6 +398,11 @@ NSString * const HBVideoChangedNotification = @"HBVideoChangedNotification";
     }
 
     return [temp copy];
+}
+
++ (NSSet<NSString *> *)keyPathsForValuesAffectingLevels
+{
+    return [NSSet setWithObjects:@"encoder", nil];
 }
 
 - (NSArray *)levels
@@ -564,10 +566,10 @@ NSString * const HBVideoChangedNotification = @"HBVideoChangedNotification";
         [string appendString:@"fastdecode"];
     }
 
-    return string;
+    return [string copy];
 }
 
-- (void)applyPreset:(HBPreset *)preset
+- (void)applyPreset:(HBPreset *)preset jobSettings:(NSDictionary *)settings
 {
     self.notificationsEnabled = NO;
 

@@ -14,10 +14,13 @@ extern NSString * const HBFiltersChangedNotification;
 /**
  *  Filters settings.
  */
-@interface HBFilters : NSObject <NSSecureCoding, NSCopying, HBPresetCoding>
+@interface HBFilters : NSObject <NSSecureCoding, NSCopying>
 
 @property (nonatomic, readwrite, copy) NSString *detelecine;
 @property (nonatomic, readwrite, copy) NSString *detelecineCustomString;
+
+@property (nonatomic, readwrite, copy) NSString *combDetection;
+@property (nonatomic, readwrite, copy) NSString *combDetectionCustomString;
 
 @property (nonatomic, readwrite, copy) NSString *deinterlace;
 @property (nonatomic, readwrite, copy) NSString *deinterlacePreset;
@@ -29,7 +32,11 @@ extern NSString * const HBFiltersChangedNotification;
 @property (nonatomic, readwrite, copy) NSString *denoiseCustomString;
 
 @property (nonatomic, readwrite) int deblock;
+
 @property (nonatomic, readwrite) BOOL grayscale;
+
+@property (nonatomic, readwrite) int rotate;
+@property (nonatomic, readwrite) BOOL flip;
 
 @property (nonatomic, readwrite, weak, nullable) NSUndoManager *undo;
 

@@ -1,16 +1,17 @@
 /* hb.c
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
    For full terms see the file COPYING file or visit http://www.gnu.org/licenses/gpl-2.0.html
  */
- 
+
 #include "hb.h"
 #include "opencl.h"
 #include "hbffmpeg.h"
 #include "encx264.h"
+#include "libavfilter/avfilter.h"
 #include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -21,7 +22,7 @@
 
 #if defined( SYS_MINGW )
 #include <io.h>
-#if defined( PTW32_STATIC_LIB )
+#if defined(PTW32_VERSION)
 #include <pthread.h>
 #endif
 #endif
@@ -29,11 +30,6 @@
 struct hb_handle_s
 {
     int            id;
-    
-    /* The "Check for update" thread */
-    int            build;
-    char           version[32];
-    hb_thread_t  * update_thread;
 
     /* This thread's only purpose is to check other threads'
        states */
@@ -59,11 +55,9 @@ struct hb_handle_s
 
     int            paused;
     hb_lock_t    * pause_lock;
-    /* For MacGui active queue
-       increments each time the scan thread completes*/
-    int            scanCount;
+
     volatile int   scan_die;
-    
+
     /* Stash of persistent data between jobs, for stuff
        like correcting frame count and framerate estimates
        on multi-pass encodes where frames get dropped.     */
@@ -72,29 +66,11 @@ struct hb_handle_s
     // power management opaque pointer
     void         * system_sleep_opaque;
 
-    // When hardware decoding, scan must also use hardware so that
-    // libav hardware decode contest is used.  So set hardware
-    // decoding as a global property on the hb instance.
-    hb_hwd_t       hwd;
+    int            enable_opencl;
 };
 
 hb_work_object_t * hb_objects = NULL;
 int hb_instance_counter = 0;
-
-void hb_hwd_set_enable( hb_handle_t *h, uint8_t enable )
-{
-    h->hwd.enable = enable;
-}
-
-int hb_hwd_enabled( hb_handle_t *h )
-{
-    return h->hwd.enable;
-}
-
-hb_hwd_t * hb_hwd_get_context( hb_handle_t *h )
-{
-    return &h->hwd;
-}
 
 static void thread_func( void * );
 
@@ -128,6 +104,7 @@ void hb_avcodec_init()
 {
     av_lockmgr_register(ff_lockmgr_cb);
     av_register_all();
+    avfilter_register_all();
 #ifdef _WIN64
     // avresample's assembly optimizations can cause crashes under Win x86_64
     // (see http://bugzilla.libav.org/show_bug.cgi?id=496)
@@ -143,7 +120,7 @@ int hb_avcodec_open(AVCodecContext *avctx, AVCodec *codec,
 {
     int ret;
 
-    if ((thread_count == HB_FFMPEG_THREADS_AUTO || thread_count > 0) && 
+    if ((thread_count == HB_FFMPEG_THREADS_AUTO || thread_count > 0) &&
         (codec->type == AVMEDIA_TYPE_VIDEO))
     {
         avctx->thread_count = (thread_count == HB_FFMPEG_THREADS_AUTO) ?
@@ -164,6 +141,11 @@ int hb_avcodec_open(AVCodecContext *avctx, AVCodec *codec,
 
     ret = avcodec_open2(avctx, codec, av_opts);
     return ret;
+}
+
+int hb_get_opencl_enabled(hb_handle_t *h)
+{
+    return h->enable_opencl;
 }
 
 int hb_avcodec_close(AVCodecContext *avctx)
@@ -229,10 +211,37 @@ static int handle_jpeg(enum AVPixelFormat *format)
     }
 }
 
+int hb_ff_get_colorspace(int color_matrix)
+{
+    int color_space = SWS_CS_DEFAULT;
+
+    switch (color_matrix)
+    {
+        case HB_COLR_MAT_SMPTE170M:
+            color_space = SWS_CS_ITU601;
+            break;
+        case HB_COLR_MAT_SMPTE240M:
+            color_space = SWS_CS_SMPTE240M;
+            break;
+        case HB_COLR_MAT_BT709:
+            color_space = SWS_CS_ITU709;
+            break;
+        /* enable this when implemented in Libav
+        case HB_COLR_MAT_BT2020:
+            color_space = SWS_CS_BT2020;
+            break;
+         */
+        default:
+            break;
+    }
+
+    return color_space;
+}
+
 struct SwsContext*
 hb_sws_get_context(int srcW, int srcH, enum AVPixelFormat srcFormat,
                    int dstW, int dstH, enum AVPixelFormat dstFormat,
-                   int flags)
+                   int flags, int colorspace)
 {
     struct SwsContext * ctx;
 
@@ -243,9 +252,7 @@ hb_sws_get_context(int srcW, int srcH, enum AVPixelFormat srcFormat,
 
         srcRange = handle_jpeg(&srcFormat);
         dstRange = handle_jpeg(&dstFormat);
-        /* enable this when implemented in Libav
         flags |= SWS_FULL_CHR_H_INT | SWS_FULL_CHR_H_INP;
-         */
 
         av_opt_set_int(ctx, "srcw", srcW, 0);
         av_opt_set_int(ctx, "srch", srcH, 0);
@@ -257,10 +264,10 @@ hb_sws_get_context(int srcW, int srcH, enum AVPixelFormat srcFormat,
         av_opt_set_int(ctx, "dst_format", dstFormat, 0);
         av_opt_set_int(ctx, "sws_flags", flags, 0);
 
-        sws_setColorspaceDetails( ctx, 
-                      sws_getCoefficients( SWS_CS_DEFAULT ), // src colorspace
+        sws_setColorspaceDetails( ctx,
+                      sws_getCoefficients( colorspace ), // src colorspace
                       srcRange, // src range 0 = MPG, 1 = JPG
-                      sws_getCoefficients( SWS_CS_DEFAULT ), // dst colorspace
+                      sws_getCoefficients( colorspace ), // dst colorspace
                       dstRange, // dst range 0 = MPG, 1 = JPG
                       0,         // brightness
                       1 << 16,   // contrast
@@ -270,7 +277,7 @@ hb_sws_get_context(int srcW, int srcH, enum AVPixelFormat srcFormat,
             hb_error("Cannot initialize resampling context");
             sws_freeContext(ctx);
             ctx = NULL;
-        } 
+        }
     }
     return ctx;
 }
@@ -409,46 +416,20 @@ void hb_log_level_set(hb_handle_t *h, int level)
     global_verbosity_level = level;
 }
 
-void hb_update_poll(hb_handle_t *h)
+/*
+ * Enable or disable support for OpenCL detection.
+ */
+void hb_opencl_set_enable(hb_handle_t *h, int enable_opencl)
 {
-    uint64_t      date;
-
-    hb_log( "hb_update_poll: checking for updates" );
-    date             = hb_get_date();
-    h->update_thread = hb_update_init( &h->build, h->version );
-
-    for( ;; )
-    {
-        if (h->update_thread == 0)
-        {
-            // Closed by thread_func
-            break;
-        }
-        if (hb_thread_has_exited(h->update_thread))
-        {
-            /* Immediate success or failure */
-            hb_thread_close( &h->update_thread );
-            break;
-        }
-        if (hb_get_date() > date + 1000)
-        {
-            /* Still nothing after one second. Connection problem,
-               let the thread die */
-            hb_log( "hb_update_poll: connection problem, not waiting for "
-                    "update_thread" );
-            break;
-        }
-        hb_snooze( 500 );
-    }
+    h->enable_opencl = enable_opencl;
 }
 
 /**
  * libhb initialization routine.
  * @param verbose HB_DEBUG_NONE or HB_DEBUG_ALL.
- * @param update_check signals libhb to check for updated version from HandBrake website.
  * @return Handle to hb_handle_t for use on all subsequent calls to libhb.
  */
-hb_handle_t * hb_init( int verbose, int update_check )
+hb_handle_t * hb_init( int verbose )
 {
     hb_handle_t * h = calloc( sizeof( hb_handle_t ), 1 );
 
@@ -457,18 +438,10 @@ hb_handle_t * hb_init( int verbose, int update_check )
 
     h->id = hb_instance_counter++;
 
-    /* Check for an update on the website if asked to */
-    h->build = -1;
-
     /* Initialize opaque for PowerManagement purposes */
     h->system_sleep_opaque = hb_system_sleep_opaque_init();
 
-    if( update_check )
-    {
-        hb_update_poll(h);
-    }
-
-    h->title_set.list_title = hb_list_init();
+	h->title_set.list_title = hb_list_init();
     h->jobs       = hb_list_init();
 
     h->state_lock  = hb_lock_init();
@@ -559,18 +532,6 @@ const char * hb_get_version( hb_handle_t * h )
 int hb_get_build( hb_handle_t * h )
 {
     return hb_build;
-}
-
-/**
- * Checks for needed update.
- * @param h Handle to hb_handle_t.
- * @param version Pointer to handle where version will be copied.
- * @return update indicator.
- */
-int hb_check_update( hb_handle_t * h, char ** version )
-{
-    *version = ( h->build < 0 ) ? NULL : h->version;
-    return h->build;
 }
 
 /**
@@ -682,7 +643,10 @@ void hb_scan( hb_handle_t * h, const char * path, int title_index,
     hb_log(" - logical processor count: %d", hb_get_cpu_count());
 
     /* Print OpenCL info here so that it's in all scan and encode logs */
-    hb_opencl_info_print();
+    if (hb_get_opencl_enabled(h))
+    {
+        hb_opencl_info_print();
+    }
 
 #ifdef USE_QSV
     /* Print QSV info here so that it's in all scan and encode logs */
@@ -690,9 +654,14 @@ void hb_scan( hb_handle_t * h, const char * path, int title_index,
 #endif
 
     hb_log( "hb_scan: path=%s, title_index=%d", path, title_index );
-    h->scan_thread = hb_scan_init( h, &h->scan_die, path, title_index, 
-                                   &h->title_set, preview_count, 
+    h->scan_thread = hb_scan_init( h, &h->scan_die, path, title_index,
+                                   &h->title_set, preview_count,
                                    store_previews, min_duration );
+}
+
+void hb_force_rescan( hb_handle_t * h )
+{
+    h->title_set.path[0] = 0;
 }
 
 /**
@@ -714,6 +683,7 @@ int hb_save_preview( hb_handle_t * h, int title, int preview, hb_buffer_t *buf )
 {
     FILE * file;
     char   filename[1024];
+    char   reason[80];
 
     hb_get_tempory_filename( h, filename, "%d_%d_%d",
                              hb_get_instance_id(h), title, preview );
@@ -721,7 +691,10 @@ int hb_save_preview( hb_handle_t * h, int title, int preview, hb_buffer_t *buf )
     file = hb_fopen(filename, "wb");
     if( !file )
     {
-        hb_error( "hb_save_preview: fopen failed (%s)", filename );
+        if (strerror_r(errno, reason, 79) != 0)
+            strcpy(reason, "unknown -- strerror_r() failed");
+
+        hb_error( "hb_save_preview: Failed to open %s (reason: %s)", filename, reason );
         return -1;
     }
 
@@ -735,11 +708,25 @@ int hb_save_preview( hb_handle_t * h, int title, int preview, hb_buffer_t *buf )
 
         for( hh = 0; hh < h; hh++ )
         {
-            fwrite( data, w, 1, file );
+            if (fwrite( data, w, 1, file ) < w)
+            {
+                if (ferror(file))
+                {
+                    if (strerror_r(errno, reason, 79) != 0)
+                        strcpy(reason, "unknown -- strerror_r() failed");
+
+                    hb_error( "hb_save_preview: Failed to write line %d to %s (reason: %s). Preview will be incomplete.",
+                              hh, filename, reason );
+                    goto done;
+                }
+            }
             data += stride;
         }
     }
+
+done:
     fclose( file );
+
     return 0;
 }
 
@@ -747,6 +734,7 @@ hb_buffer_t * hb_read_preview(hb_handle_t * h, hb_title_t *title, int preview)
 {
     FILE * file;
     char   filename[1024];
+    char   reason[80];
 
     hb_get_tempory_filename(h, filename, "%d_%d_%d",
                             hb_get_instance_id(h), title->index, preview);
@@ -754,13 +742,19 @@ hb_buffer_t * hb_read_preview(hb_handle_t * h, hb_title_t *title, int preview)
     file = hb_fopen(filename, "rb");
     if (!file)
     {
-        hb_error( "hb_read_preview: fopen failed (%s)", filename );
+        if (strerror_r(errno, reason, 79) != 0)
+            strcpy(reason, "unknown -- strerror_r() failed");
+
+        hb_error( "hb_read_preview: Failed to open %s (reason: %s)", filename, reason );
         return NULL;
     }
 
     hb_buffer_t * buf;
     buf = hb_frame_buffer_init(AV_PIX_FMT_YUV420P,
                                title->geometry.width, title->geometry.height);
+
+    if (!buf)
+        goto done;
 
     int pp, hh;
     for (pp = 0; pp < 3; pp++)
@@ -772,10 +766,23 @@ hb_buffer_t * hb_read_preview(hb_handle_t * h, hb_title_t *title, int preview)
 
         for (hh = 0; hh < h; hh++)
         {
-            fread(data, w, 1, file);
+            if (fread(data, w, 1, file) < w)
+            {
+                if (ferror(file))
+                {
+                    if (strerror_r(errno, reason, 79) != 0)
+                        strcpy(reason, "unknown -- strerror_r() failed");
+
+                    hb_error( "hb_read_preview: Failed to read line %d from %s (reason: %s). Preview will be incomplete.",
+                          hh, filename, reason );
+                    goto done;
+                }
+            }
             data += stride;
         }
     }
+
+done:
     fclose(file);
 
     return buf;
@@ -844,11 +851,13 @@ hb_image_t* hb_get_preview2(hb_handle_t * h, int title_idx, int picture,
                         geo->crop[0], geo->crop[2] );
     }
 
+    int colorspace = hb_ff_get_colorspace(title->color_matrix);
+
     // Get scaling context
     context = hb_sws_get_context(
                 title->geometry.width  - (geo->crop[2] + geo->crop[3]),
                 title->geometry.height - (geo->crop[0] + geo->crop[1]),
-                AV_PIX_FMT_YUV420P, width, height, AV_PIX_FMT_RGB32, swsflags);
+                AV_PIX_FMT_YUV420P, width, height, AV_PIX_FMT_RGB32, swsflags, colorspace);
 
     if (context == NULL)
     {
@@ -916,7 +925,7 @@ int hb_detect_comb( hb_buffer_t * buf, int color_equal, int color_diff, int thre
         threshold = prog_threshold;
     }
 
-    /* One pas for Y, one pass for Cb, one pass for Cr */    
+    /* One pas for Y, one pass for Cb, one pass for Cr */
     for( k = 0; k < 3; k++ )
     {
         uint8_t * data = buf->plane[k].data;
@@ -963,7 +972,7 @@ int hb_detect_comb( hb_buffer_t * buf, int color_equal, int color_diff, int thre
 
     /* HandBrake is all yuv420, so weight the average percentage of all 3 planes accordingly.*/
     int average_cc = ( 2 * cc[0] + ( cc[1] / 2 ) + ( cc[2] / 2 ) ) / 3;
-    
+
     /* Now see if that average percentage of combed pixels surpasses the threshold percentage given by the user.*/
     if( average_cc > threshold )
     {
@@ -1098,6 +1107,8 @@ void hb_set_anamorphic_size2(hb_geometry_t *src_geo,
     {
         case HB_ANAMORPHIC_NONE:
         {
+            /* "None" anamorphic, a.k.a. 1:1.
+             */
             double par, cropped_sar, dar;
             par = (double)src_geo->par.num / src_geo->par.den;
             cropped_sar = (double)cropped_width / cropped_height;
@@ -1162,7 +1173,6 @@ void hb_set_anamorphic_size2(hb_geometry_t *src_geo,
             dst_par_num = dst_par_den = 1;
         } break;
 
-        default:
         case HB_ANAMORPHIC_STRICT:
         {
             /* "Strict" anamorphic.
@@ -1236,7 +1246,7 @@ void hb_set_anamorphic_size2(hb_geometry_t *src_geo,
 
         case HB_ANAMORPHIC_CUSTOM:
         {
-            /* Anamorphic 3: Power User Jamboree
+            /* "Custom" anamorphic: Power User Jamboree
                - Set everything based on specified values */
 
             /* Time to get picture dimensions that divide cleanly.*/
@@ -1272,11 +1282,51 @@ void hb_set_anamorphic_size2(hb_geometry_t *src_geo,
                                        src_par.den;
             }
         } break;
+
+        default:
+        case HB_ANAMORPHIC_AUTO:
+        {
+            /* "Automatic" anamorphic.
+             *  - Uses mod-compliant dimensions, set by user
+             *  - Allows users to set the either width *or* height
+             *  - Does *not* maintain original source PAR if one
+             *    or both dimensions is limited by maxWidth/maxHeight.
+             */
+            /* Anamorphic 3: Power User Jamboree
+               - Set everything based on specified values */
+
+            /* Time to get picture dimensions that divide cleanly.*/
+            width  = MULTIPLE_MOD_UP(geo->geometry.width, mod);
+            height = MULTIPLE_MOD_UP(geo->geometry.height, mod);
+
+            // Limit to min/max dimensions
+            if (width < HB_MIN_WIDTH)
+            {
+                width  = HB_MIN_WIDTH;
+            }
+            if (height < HB_MIN_HEIGHT)
+            {
+                height  = HB_MIN_HEIGHT;
+            }
+            if (width > maxWidth)
+            {
+                width = maxWidth;
+            }
+            if (height > maxHeight)
+            {
+                height = maxHeight;
+            }
+            /* Adjust the output PAR for new width/height
+             * See comment in HB_ANAMORPHIC_STRICT
+             */
+            dst_par_num = (int64_t)height * cropped_width  * src_par.num;
+            dst_par_den = (int64_t)width  * cropped_height * src_par.den;
+        } break;
     }
     if (width < HB_MIN_WIDTH || height < HB_MIN_HEIGHT ||
         width > maxWidth     || height > maxHeight)
     {
-        // All limits set above also attempted to keep PAR and DAR.
+        // Limits set above may have also attempted to keep PAR and DAR.
         // If we are still outside limits, enforce them and modify
         // PAR to keep DAR
         if (width < HB_MIN_WIDTH)
@@ -1332,13 +1382,63 @@ void hb_set_anamorphic_size2(hb_geometry_t *src_geo,
  * @param job Handle to hb_job_t
  * @param settings to give the filter
  */
-void hb_add_filter( hb_job_t * job, hb_filter_object_t * filter, const char * settings_in )
+void hb_add_filter2( hb_value_array_t * list, hb_dict_t * filter_dict )
 {
-    char * settings = NULL;
+    int new_id = hb_dict_get_int(filter_dict, "ID");
 
-    if ( settings_in != NULL )
+    hb_filter_object_t * filter = hb_filter_get(new_id);
+    if (filter == NULL)
     {
-        settings = strdup( settings_in );
+        hb_error("hb_add_filter2: Invalid filter ID %d", new_id);
+        hb_value_free(&filter_dict);
+        return;
+    }
+    if (filter->enforce_order)
+    {
+        // Find the position in the filter chain this filter belongs in
+        int ii, len;
+
+        len = hb_value_array_len(list);
+        for( ii = 0; ii < len; ii++ )
+        {
+            hb_value_t * f = hb_value_array_get(list, ii);
+            int id = hb_dict_get_int(f, "ID");
+            if (id > new_id)
+            {
+                hb_value_array_insert(list, ii, filter_dict);
+                return;
+            }
+            else if ( id == new_id )
+            {
+                // Don't allow the same filter to be added twice
+                hb_value_free(&filter_dict);
+                return;
+            }
+        }
+    }
+    // No position found or order not enforced for this filter
+    hb_value_array_append(list, filter_dict);
+}
+
+/**
+ * Add a filter to a jobs filter list
+ *
+ * @param job Handle to hb_job_t
+ * @param settings to give the filter
+ */
+void hb_add_filter_dict( hb_job_t * job, hb_filter_object_t * filter,
+                         const hb_dict_t * settings_in )
+{
+    hb_dict_t * settings;
+
+    // Always set filter->settings to a valid hb_dict_t
+    if (settings_in == NULL)
+    {
+        settings = hb_dict_init();
+    }
+    else
+    {
+        settings = hb_value_dup(settings_in);
     }
     filter->settings = settings;
     if( filter->enforce_order )
@@ -1363,6 +1463,25 @@ void hb_add_filter( hb_job_t * job, hb_filter_object_t * filter, const char * se
     }
     // No position found or order not enforced for this filter
     hb_list_add( job->list_filter, filter );
+}
+
+/**
+ * Add a filter to a jobs filter list
+ *
+ * @param job Handle to hb_job_t
+ * @param settings to give the filter
+ */
+void hb_add_filter( hb_job_t * job, hb_filter_object_t * filter,
+                    const char * settings_in )
+{
+    hb_dict_t * settings = hb_parse_filter_settings(settings_in);
+    if (settings_in != NULL && settings == NULL)
+    {
+        hb_log("hb_add_filter: failed to parse filter settings!");
+        return;
+    }
+    hb_add_filter_dict(job, filter, settings);
+    hb_value_free(&settings);
 }
 
 /**
@@ -1405,8 +1524,21 @@ static void hb_add_internal( hb_handle_t * h, hb_job_t * job, hb_list_t *list_pa
     char            audio_lang[4];
 
     /* Copy the job */
-    job_copy        = calloc( sizeof( hb_job_t ), 1 );
-    memcpy( job_copy, job, sizeof( hb_job_t ) );
+    job_copy                  = calloc( sizeof( hb_job_t ), 1 );
+    memcpy(job_copy, job, sizeof(hb_job_t));
+    job_copy->json            = NULL;
+    job_copy->encoder_preset  = NULL;
+    job_copy->encoder_tune    = NULL;
+    job_copy->encoder_profile = NULL;
+    job_copy->encoder_level   = NULL;
+    job_copy->encoder_options = NULL;
+    job_copy->file            = NULL;
+    job_copy->list_chapter    = NULL;
+    job_copy->list_audio      = NULL;
+    job_copy->list_subtitle   = NULL;
+    job_copy->list_filter     = NULL;
+    job_copy->list_attachment = NULL;
+    job_copy->metadata        = NULL;
 
     /* If we're doing Foreign Audio Search, copy all subtitles matching the
      * first audio track language we find in the audio list.
@@ -1435,7 +1567,7 @@ static void hb_add_internal( hb_handle_t * h, hb_job_t * job, hb_list_t *list_pa
          * language.
          */
         job_copy->list_subtitle = hb_list_init();
-    
+
         for( i = 0; i < hb_list_count( job->title->list_subtitle ); i++ )
         {
             subtitle = hb_list_item( job->title->list_subtitle, i );
@@ -1450,6 +1582,14 @@ static void hb_add_internal( hb_handle_t * h, hb_job_t * job, hb_list_t *list_pa
                 hb_list_add( job_copy->list_subtitle,
                              hb_subtitle_copy( subtitle ) );
             }
+        }
+        int count = hb_list_count(job_copy->list_subtitle);
+        if (count == 0 ||
+            (count == 1 && !job_copy->select_subtitle_config.force))
+        {
+            hb_log("Skipping subtitle scan.  No suitable subtitle tracks.");
+            hb_job_close(&job_copy);
+            return;
         }
     }
     else
@@ -1538,7 +1678,7 @@ int hb_add( hb_handle_t * h, hb_job_t * job )
 
 void hb_job_setup_passes(hb_handle_t * h, hb_job_t * job, hb_list_t * list_pass)
 {
-    if (job->vquality >= 0)
+    if (job->vquality > HB_INVALID_VIDEO_QUALITY)
     {
         job->twopass = 0;
     }
@@ -1585,6 +1725,8 @@ void hb_start( hb_handle_t * h )
     hb_lock( h->state_lock );
     h->state.state = HB_STATE_WORKING;
 #define p h->state.param.working
+    p.pass       = -1;
+    p.pass_count = -1;
     p.progress  = 0.0;
     p.rate_cur  = 0.0;
     p.rate_avg  = 0.0;
@@ -1647,7 +1789,8 @@ void hb_resume( hb_handle_t * h )
  */
 void hb_stop( hb_handle_t * h )
 {
-    h->work_die = 1;
+    h->work_error = HB_ERROR_CANCELED;
+    h->work_die   = 1;
     hb_resume( h );
 }
 
@@ -1696,7 +1839,7 @@ void hb_close( hb_handle_t ** _h )
     hb_title_t * title;
 
     h->die = 1;
-    
+
     hb_thread_close( &h->main_thread );
 
     while( ( title = hb_list_item( h->title_set.list_title, 0 ) ) )
@@ -1736,6 +1879,7 @@ int hb_global_init()
         hb_error("hb_qsv_info_init failed!");
         return -1;
     }
+    hb_param_configure_qsv();
 #endif
 
     /* libavcodec */
@@ -1746,6 +1890,7 @@ int hb_global_init()
     hb_register(&hb_reader);
     hb_register(&hb_sync_video);
     hb_register(&hb_sync_audio);
+    hb_register(&hb_sync_subtitle);
     hb_register(&hb_decavcodecv);
     hb_register(&hb_decavcodeca);
     hb_register(&hb_declpcm);
@@ -1772,7 +1917,7 @@ int hb_global_init()
 #ifdef USE_QSV
     hb_register(&hb_encqsv);
 #endif
-    
+
     hb_x264_global_init();
     hb_common_global_init();
 
@@ -1795,7 +1940,7 @@ void hb_global_close()
     char dirname[1024];
     DIR * dir;
     struct dirent * entry;
-    
+
     hb_presets_free();
 
     /* OpenCL library (dynamically loaded) */
@@ -1845,14 +1990,6 @@ static void thread_func( void * _h )
 
     while( !h->die )
     {
-        /* In case the check_update thread hangs, it'll die sooner or
-           later. Then, we join it here */
-        if( h->update_thread &&
-            hb_thread_has_exited( h->update_thread ) )
-        {
-            hb_thread_close( &h->update_thread );
-        }
-
         /* Check if the scan thread is done */
         if( h->scan_thread &&
             hb_thread_has_exited( h->scan_thread ) )
@@ -1878,11 +2015,8 @@ static void thread_func( void * _h )
                         hb_list_count( h->title_set.list_title ) );
             }
             hb_lock( h->state_lock );
-            h->state.state = HB_STATE_SCANDONE; //originally state.state
-			hb_unlock( h->state_lock );
-			/*we increment this sessions scan count by one for the MacGui
-			to trigger a new source being set */
-            h->scanCount++;
+            h->state.state = HB_STATE_SCANDONE;
+            hb_unlock( h->state_lock );
         }
 
         /* Check if the work thread is done */
@@ -1924,7 +2058,8 @@ static void thread_func( void * _h )
 static void redirect_thread_func(void * _data)
 {
     int pfd[2];
-    pipe(pfd);
+    if (pipe(pfd))
+       return;
 #if defined( SYS_MINGW )
     // dup2 doesn't work on windows for some stupid reason
     stderr->_file = pfd[1];
@@ -1932,7 +2067,7 @@ static void redirect_thread_func(void * _data)
     dup2(pfd[1], /*stderr*/ 2);
 #endif
     FILE * log_f = fdopen(pfd[0], "rb");
-    
+
     char line_buffer[500];
     while(fgets(line_buffer, 500, log_f) != NULL)
     {

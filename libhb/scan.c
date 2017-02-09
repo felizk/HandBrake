@@ -1,6 +1,6 @@
 /* scan.c
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -58,8 +58,8 @@ static const char *aspect_to_string(hb_rational_t *dar)
 }
 
 hb_thread_t * hb_scan_init( hb_handle_t * handle, volatile int * die,
-                            const char * path, int title_index, 
-                            hb_title_set_t * title_set, int preview_count, 
+                            const char * path, int title_index,
+                            hb_title_set_t * title_set, int preview_count,
                             int store_previews, uint64_t min_duration )
 {
     hb_scan_t * data = calloc( sizeof( hb_scan_t ), 1 );
@@ -119,7 +119,7 @@ static void ScanFunc( void * _data )
             {
                 UpdateState1(data, i + 1);
                 hb_list_add( data->title_set->list_title,
-                             hb_bd_title_scan( data->bd, 
+                             hb_bd_title_scan( data->bd,
                              i + 1, data->min_title_duration ) );
             }
             feature = hb_bd_main_feature( data->bd,
@@ -144,7 +144,7 @@ static void ScanFunc( void * _data )
             {
                 UpdateState1(data, i + 1);
                 hb_list_add( data->title_set->list_title,
-                             hb_dvd_title_scan( data->dvd, 
+                             hb_dvd_title_scan( data->dvd,
                             i + 1, data->min_title_duration ) );
             }
             feature = hb_dvd_main_feature( data->dvd,
@@ -200,7 +200,7 @@ static void ScanFunc( void * _data )
         {
             hb_title_close( &title );
             hb_log( "scan: unrecognized file type" );
-            return;
+            goto finish;
         }
     }
 
@@ -264,7 +264,7 @@ static void ScanFunc( void * _data )
 
         if ( data->dvd || data->bd )
         {
-            // The subtitle width and height needs to be set to the 
+            // The subtitle width and height needs to be set to the
             // title widht and height for DVDs.  title width and
             // height don't get set until we decode previews, so
             // we can't set subtitle width/height till we get here.
@@ -333,7 +333,7 @@ static inline int absdiff( int x, int y )
     return x < y ? y - x : x - y;
 }
 
-static inline int clampBlack( int x ) 
+static inline int clampBlack( int x )
 {
     // luma 'black' is 16 and anything less should be clamped at 16
     return x < 16 ? 16 : x;
@@ -530,6 +530,7 @@ static int DecodePreviews( hb_scan_t * data, hb_title_t * title, int flush )
     int                frames;
     hb_stream_t      * stream = NULL;
     info_list_t      * info_list;
+    int                abort_audio = 0;
 
     info_list = calloc(data->preview_count+1, sizeof(*info_list));
     crop_record_t *crops = crop_record_init( data->preview_count );
@@ -568,12 +569,24 @@ static int DecodePreviews( hb_scan_t * data, hb_title_t * title, int flush )
     if (title->video_codec == WORK_NONE)
     {
         hb_error("No video decoder set!");
+        free(info_list);
+        crop_record_free(crops);
+        hb_stream_close(&stream);
         return 0;
     }
     hb_work_object_t *vid_decoder = hb_get_work(data->h, title->video_codec);
     vid_decoder->codec_param = title->video_codec_param;
     vid_decoder->title = title;
-    vid_decoder->init( vid_decoder, NULL );
+
+    if (vid_decoder->init(vid_decoder, NULL))
+    {
+        hb_error("Decoder init failed!");
+        free(info_list);
+        crop_record_free(crops);
+        free( vid_decoder );
+        hb_stream_close(&stream);
+        return 0;
+    }
 
     for( i = 0; i < data->preview_count; i++ )
     {
@@ -585,6 +598,9 @@ static int DecodePreviews( hb_scan_t * data, hb_title_t * title, int flush )
         {
             free( info_list );
             crop_record_free( crops );
+            vid_decoder->close( vid_decoder );
+            free( vid_decoder );
+            hb_stream_close(&stream);
             return 0;
         }
         if (data->bd)
@@ -657,46 +673,53 @@ static int DecodePreviews( hb_scan_t * data, hb_title_t * title, int flush )
 
         int total_read = 0, packets = 0;
         while (total_read < PREVIEW_READ_THRESH ||
-              (!AllAudioOK(title) && packets < 10000)) 
+              (!AllAudioOK(title) && packets < 10000))
         {
             if (data->bd)
             {
-              if( (buf = hb_bd_read( data->bd )) == NULL )
-              {
-                  if ( vid_buf )
-                  {
-                    break;
-                  }
-                  hb_log( "Warning: Could not read data for preview %d, skipped", i + 1 );
-                  abort = 1;
-                  goto skip_preview;
-              }
+                if( (buf = hb_bd_read( data->bd )) == NULL )
+                {
+                    // If we reach EOF and no audio, don't continue looking for
+                    // audio
+                    abort_audio = 1;
+                    if ( vid_buf )
+                    {
+                        break;
+                    }
+                    hb_log( "Warning: Could not read data for preview %d, skipped", i + 1 );
+                    // If we reach EOF and no video, don't continue looking for
+                    // video
+                    abort = 1;
+                    goto skip_preview;
+                }
             }
             else if (data->dvd)
             {
-              if( (buf = hb_dvd_read( data->dvd )) == NULL )
-              {
-                  if ( vid_buf )
-                  {
-                    break;
-                  }
-                  hb_log( "Warning: Could not read data for preview %d, skipped", i + 1 );
-                  abort = 1;
-                  goto skip_preview;
-              }
+                if( (buf = hb_dvd_read( data->dvd )) == NULL )
+                {
+                    abort_audio = 1;
+                    if ( vid_buf )
+                    {
+                        break;
+                    }
+                    hb_log( "Warning: Could not read data for preview %d, skipped", i + 1 );
+                    abort = 1;
+                    goto skip_preview;
+                }
             }
             else if (stream)
             {
-              if ( (buf = hb_stream_read(stream)) == NULL )
-              {
-                  if ( vid_buf )
-                  {
-                    break;
-                  }
-                  hb_log( "Warning: Could not read data for preview %d, skipped", i + 1 );
-                  abort = 1;
-                  goto skip_preview;
-              }
+                if ( (buf = hb_stream_read(stream)) == NULL )
+                {
+                    abort_audio = 1;
+                    if ( vid_buf )
+                    {
+                        break;
+                    }
+                    hb_log( "Warning: Could not read data for preview %d, skipped", i + 1 );
+                    abort = 1;
+                    goto skip_preview;
+                }
             }
             else
             {
@@ -774,7 +797,7 @@ static int DecodePreviews( hb_scan_t * data, hb_title_t * title, int flush )
                         frames++;
                     }
                 }
-                else if( ! AllAudioOK( title ) ) 
+                else if (!AllAudioOK(title) && !abort_audio)
                 {
                     LookForAudio( data, title, buf_es );
                     buf_es = NULL;
@@ -783,9 +806,10 @@ static int DecodePreviews( hb_scan_t * data, hb_title_t * title, int flush )
                     hb_buffer_close( &buf_es );
             }
 
-            if( vid_buf && AllAudioOK( title ) )
+            if (vid_buf && (abort_audio || AllAudioOK(title)))
                 break;
         }
+        hb_buffer_list_close(&list_es);
 
         if( ! vid_buf )
         {
@@ -810,9 +834,14 @@ static int DecodePreviews( hb_scan_t * data, hb_title_t * title, int flush )
             continue;
         }
 
+        if (vid_info.geometry.width  != vid_buf->f.width ||
+            vid_info.geometry.height != vid_buf->f.height)
+        {
+            hb_log( "scan: video geometry information does not match buffer" );
+            hb_buffer_close( &vid_buf );
+            continue;
+        }
         remember_info( info_list, &vid_info );
-
-        hb_buffer_list_close(&list_es);
 
         /* Check preview for interlacing artifacts */
         if( hb_detect_comb( vid_buf, 10, 30, 9, 10, 30, 9 ) )
@@ -820,7 +849,7 @@ static int DecodePreviews( hb_scan_t * data, hb_title_t * title, int flush )
             hb_deep_log( 2, "Interlacing detected in preview frame %i", i+1);
             interlaced_preview_count++;
         }
-        
+
         if( data->store_previews )
         {
             hb_save_preview( data->h, title->index, i, vid_buf );
@@ -992,8 +1021,12 @@ skip_preview:
         title->video_decode_support = vid_info.video_decode_support;
 
         // TODO: check video dimensions
-        title->opencl_support = !!hb_opencl_available();
-
+        hb_handle_t *hb_handle = (hb_handle_t *)data->h;
+        if (hb_get_opencl_enabled(hb_handle))
+        {
+             title->opencl_support = !!hb_opencl_available();
+        }
+        
         // compute the aspect ratio based on the storage dimensions and PAR.
         hb_reduce(&title->dar.num, &title->dar.den,
                   title->geometry.par.num * title->geometry.width,
@@ -1026,7 +1059,7 @@ skip_preview:
             sort_crops( crops );
             // The next line selects median cropping - at least
             // 50% of the frames will have their borders removed.
-            // Other possible choices are loose cropping (i = 0) where 
+            // Other possible choices are loose cropping (i = 0) where
             // no non-black pixels will be cropped from any frame and a
             // tight cropping (i = crops->n - (crops->n >> 2)) where at
             // least 75% of the frames will have their borders removed.
@@ -1047,10 +1080,9 @@ skip_preview:
 
         if (title->video_decode_support != HB_DECODE_SUPPORT_SW)
         {
-            hb_log("scan: supported video decoders:%s%s%s",
+            hb_log("scan: supported video decoders:%s%s",
                    !(title->video_decode_support & HB_DECODE_SUPPORT_SW)    ? "" : " avcodec",
-                   !(title->video_decode_support & HB_DECODE_SUPPORT_QSV)   ? "" : " qsv",
-                   !(title->video_decode_support & HB_DECODE_SUPPORT_DXVA2) ? "" : " dxva2");
+                   !(title->video_decode_support & HB_DECODE_SUPPORT_QSV)   ? "" : " qsv");
         }
 
         if( interlaced_preview_count >= ( npreviews / 2 ) )
@@ -1337,7 +1369,7 @@ static void LookForAudio(hb_scan_t *scan, hb_title_t * title, hb_buffer_t * b)
     hb_log( "scan: audio 0x%x: %s, rate=%dHz, bitrate=%d %s", audio->id,
             info.name, audio->config.in.samplerate, audio->config.in.bitrate,
             audio->config.lang.description );
- 
+
     free( w );
     return;
 

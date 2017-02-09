@@ -5,6 +5,7 @@
  It may be used under the terms of the GNU General Public License. */
 
 #import "HBDistributedArray.h"
+#import "HBUtilities.h"
 
 #include <semaphore.h>
 
@@ -58,6 +59,8 @@ NSString *HBDistributedArraWrittenToDisk = @"HBDistributedArraWrittenToDisk";
 @property (nonatomic, readonly) NSURL *fileURL;
 @property (nonatomic, readwrite) NSTimeInterval modifiedTime;
 
+@property (nonatomic, readonly) NSSet *objectClasses;
+
 @property (nonatomic, readonly) sem_t *mutex;
 @property (nonatomic, readwrite) uint32_t mutexCount;
 
@@ -65,16 +68,18 @@ NSString *HBDistributedArraWrittenToDisk = @"HBDistributedArraWrittenToDisk";
 
 @implementation HBDistributedArray
 
-- (instancetype)initWithURL:(NSURL *)fileURL
+- (instancetype)initWithURL:(NSURL *)fileURL class:(Class)objectClass
 {
     self = [super init];
     if (self)
     {
         _fileURL = [fileURL copy];
         _array = [[NSMutableArray alloc] init];
+        _objectClasses = [NSSet setWithObjects:[NSMutableArray class], objectClass, nil];
 
-        NSArray *runningInstances = [NSRunningApplication runningApplicationsWithBundleIdentifier:[[NSBundle mainBundle] bundleIdentifier]];
-        const char *name = [NSString stringWithFormat:@"/%@.hblock", _fileURL.lastPathComponent].UTF8String;
+        NSString *identifier = [[NSBundle mainBundle] bundleIdentifier];
+        NSArray *runningInstances = [NSRunningApplication runningApplicationsWithBundleIdentifier:identifier];
+        const char *name = [NSString stringWithFormat:@"%@/%@", identifier, _fileURL.lastPathComponent.stringByDeletingPathExtension].UTF8String;
 
         // Unlink the semaphore if we are the only
         // instance running, this fixes the case where
@@ -90,7 +95,7 @@ NSString *HBDistributedArraWrittenToDisk = @"HBDistributedArraWrittenToDisk";
         _mutex = sem_open(name, O_CREAT, 0777, 1);
         if (_mutex == SEM_FAILED)
         {
-            NSLog(@"%s: %d\n", "Error in creating semaphore: ", errno);
+            [HBUtilities writeToActivityLog:"%s: %d", "Error in creating semaphore: ", errno];
         }
 
         [[NSDistributedNotificationCenter defaultCenter] addObserver:self selector:@selector(handleNotification:) name:HBDistributedArraWrittenToDisk object:nil];
@@ -152,7 +157,6 @@ NSString *HBDistributedArraWrittenToDisk = @"HBDistributedArraWrittenToDisk";
         // File was modified while we waited on the lock
         // reload it
         [self reload];
-        NSLog(@"WTF");
         return HBDistributedArrayContentReload;
     }
 
@@ -179,12 +183,9 @@ NSString *HBDistributedArraWrittenToDisk = @"HBDistributedArraWrittenToDisk";
 {
     if (!([notification.object integerValue] == getpid()))
     {
-        if ([notification.userInfo[@"path"] isEqualToString:self.fileURL.path])
-        {
-            [self lock];
-            [self reload];
-            [self unlock];
-        }
+        [self lock];
+        [self reload];
+        [self unlock];
     }
 }
 
@@ -196,7 +197,18 @@ NSString *HBDistributedArraWrittenToDisk = @"HBDistributedArraWrittenToDisk";
     NSMutableArray *jobsArray = nil;
     @try
     {
-        jobsArray = [NSKeyedUnarchiver unarchiveObjectWithFile:self.fileURL.path];
+        if ([NSKeyedUnarchiver instancesRespondToSelector:@selector(requiresSecureCoding)])
+        {
+            NSData *queue = [NSData dataWithContentsOfURL:self.fileURL];
+            NSKeyedUnarchiver *unarchiver = [[NSKeyedUnarchiver alloc] initForReadingWithData:queue];
+            unarchiver.requiresSecureCoding = YES;
+            jobsArray = [unarchiver decodeObjectOfClasses:self.objectClasses forKey:NSKeyedArchiveRootObjectKey];
+            [unarchiver finishDecoding];
+        }
+        else
+        {
+            jobsArray = [NSKeyedUnarchiver unarchiveObjectWithFile:self.fileURL.path];
+        }
     }
     @catch (NSException *exception)
     {
@@ -253,13 +265,13 @@ NSString *HBDistributedArraWrittenToDisk = @"HBDistributedArraWrittenToDisk";
 
     if (![NSKeyedArchiver archiveRootObject:temp toFile:self.fileURL.path])
     {
-        NSLog(@"failed to write the queue to disk");
+        [HBUtilities writeToActivityLog:"Failed to write the queue to disk"];
     }
 
     // Send a distributed notification.
     [[NSDistributedNotificationCenter defaultCenter] postNotificationName:HBDistributedArraWrittenToDisk
                                                                    object:[NSString stringWithFormat:@"%d", getpid()]
-                                                                 userInfo:@{@"path": self.fileURL.path}
+                                                                 userInfo:nil
                                                        deliverImmediately:YES];
 
     // Update the time, so we can avoid reloaded the file from disk later.

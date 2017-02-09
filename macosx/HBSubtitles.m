@@ -9,8 +9,13 @@
 
 #import "HBSubtitlesTrack.h"
 
+#import "HBJob.h"
+#import "HBJob+HBJobConversion.h"
 #import "HBTitle.h"
 #import "HBCodingUtilities.h"
+#import "HBUtilities.h"
+#import "HBJob+Private.h"
+#import "HBSecurityAccessToken.h"
 
 #include "common.h"
 
@@ -19,11 +24,20 @@ extern NSString *keySubTrackLanguageIsoCode;
 extern NSString *keySubTrackType;
 
 extern NSString *keySubTrackSrtFileURL;
+extern NSString *keySubTrackSrtFileURLBookmark;
 
 #define NONE_TRACK_INDEX        0
 #define FOREIGN_TRACK_INDEX     1
 
 @interface HBSubtitles () <HBTrackDataSource, HBTrackDelegate>
+
+@property (nonatomic, readwrite) NSArray<NSDictionary *> *sourceTracks;
+
+@property (nonatomic, readonly) NSMutableArray<HBSecurityAccessToken *> *tokens;
+@property (nonatomic, readwrite) NSInteger *accessCount;
+
+@property (nonatomic, readwrite, weak) HBJob *job;
+@property (nonatomic, readwrite) int container;
 
 /// Used to aovid circular dependecy validation.
 @property (nonatomic, readwrite) BOOL validating;
@@ -32,16 +46,19 @@ extern NSString *keySubTrackSrtFileURL;
 
 @implementation HBSubtitles
 
-- (instancetype)initWithTitle:(HBTitle *)title
+- (instancetype)initWithJob:(HBJob *)job
 {
     self = [super init];
     if (self)
     {
+        _job = job;
         _container = HB_MUX_MP4;
 
-        _sourceTracks = [title.subtitlesTracks mutableCopy];
         _tracks = [[NSMutableArray alloc] init];
         _defaults = [[HBSubtitlesDefaults alloc] init];
+        _tokens = [NSMutableArray array];
+
+        NSMutableArray *sourceTracks = [job.title.subtitlesTracks mutableCopy];
 
         NSMutableSet<NSString *> *forcedSourceNamesArray = [NSMutableSet set];
         int foreignAudioType = VOBSUB;
@@ -71,11 +88,13 @@ extern NSString *keySubTrackSrtFileURL;
 
         // Add the none and foreign track to the source array
         NSDictionary *none = @{  keySubTrackName: NSLocalizedString(@"None", nil)};
-        [_sourceTracks insertObject:none atIndex:0];
+        [sourceTracks insertObject:none atIndex:0];
 
-        NSDictionary *foreign = @{ keySubTrackName: foreignAudioSearchTrackName,
+        NSDictionary *foreign = @{ keySubTrackName: [foreignAudioSearchTrackName copy],
                                    keySubTrackType: @(foreignAudioType) };
-        [_sourceTracks insertObject:foreign atIndex:1];
+        [sourceTracks insertObject:foreign atIndex:1];
+
+        _sourceTracks = [sourceTracks copy];
 
     }
     return self;
@@ -123,10 +142,10 @@ extern NSString *keySubTrackSrtFileURL;
                 [self insertObject:track inTracksAtIndex:0];
             }
         }
-        [self addNoneTrack];
     }
+
     // Else add a new None track
-    else if (oldSourceIdx == NONE_TRACK_INDEX)
+    if (oldSourceIdx == NONE_TRACK_INDEX)
     {
         [self addNoneTrack];
     }
@@ -179,10 +198,7 @@ extern NSString *keySubTrackSrtFileURL;
 
 - (void)addAllTracks
 {
-    while (self.countOfTracks)
-    {
-        [self removeObjectFromTracksAtIndex:0];
-    }
+    [self removeTracksAtIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, self.tracks.count)]];
 
     // Add the remainings tracks
     for (NSUInteger idx = 1; idx < self.sourceTracksArray.count; idx++) {
@@ -195,24 +211,37 @@ extern NSString *keySubTrackSrtFileURL;
 
 - (void)removeAll
 {
-    while (self.countOfTracks)
-    {
-        [self removeObjectFromTracksAtIndex:0];
-    }
+    [self removeTracksAtIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, self.tracks.count)]];
     [self addNoneTrack];
 }
 
 - (void)reloadDefaults
 {
-    [self addTracksFromDefaults];
+    [self addDefaultTracksFromJobSettings:self.job.jobDict];
 }
 
 - (void)addSrtTrackFromURL:(NSURL *)srtURL
 {
+#ifdef __SANDBOX_ENABLED__
+    // Create the security scoped bookmark
+    NSData *bookmark = [HBUtilities bookmarkFromURL:srtURL
+                                    options:NSURLBookmarkCreationWithSecurityScope |
+                                            NSURLBookmarkCreationSecurityScopeAllowOnlyReadAccess];
+#endif
+
     // Create a new entry for the subtitle source array so it shows up in our subtitle source list
-    [self.sourceTracks addObject:@{keySubTrackName: srtURL.lastPathComponent,
-                                   keySubTrackType: @(SRTSUB),
-                                   keySubTrackSrtFileURL: srtURL}];
+    NSMutableArray *sourceTrack = [self.sourceTracks mutableCopy];
+#ifdef __SANDBOX_ENABLED__
+    [sourceTrack addObject:@{keySubTrackName: srtURL.lastPathComponent,
+                             keySubTrackType: @(SRTSUB),
+                             keySubTrackSrtFileURL: srtURL,
+                             keySubTrackSrtFileURLBookmark: bookmark}];
+#else
+    [sourceTrack addObject:@{keySubTrackName: srtURL.lastPathComponent,
+                             keySubTrackType: @(SRTSUB),
+                             keySubTrackSrtFileURL: srtURL}];
+#endif
+    self.sourceTracks = [sourceTrack copy];
     HBSubtitlesTrack *track = [self trackFromSourceTrackIndex:self.sourceTracksArray.count - 1];
     [self insertObject:track inTracksAtIndex:[self countOfTracks] - 1];
 }
@@ -275,134 +304,42 @@ extern NSString *keySubTrackSrtFileURL;
 
 #pragma mark - Defaults
 
-/**
- *  Remove all the subtitles tracks and
- *  add new ones based on the defaults settings
- */
-- (IBAction)addTracksFromDefaults
+- (void)addDefaultTracksFromJobSettings:(NSDictionary *)settings
 {
-    // Keeps a set of the indexes of the added track
-    // so we don't add the same track twice.
-    NSMutableIndexSet *tracksAdded = [NSMutableIndexSet indexSet];
+    NSMutableArray<HBSubtitlesTrack *> *tracks = [NSMutableArray array];
+    NSArray<NSDictionary<NSString *, id> *> *settingsTracks = settings[@"Subtitle"][@"SubtitleList"];
+    NSDictionary<NSString *, id> *search = settings[@"Subtitle"][@"Search"];
 
-    while (self.countOfTracks)
-    {
-        [self removeObjectFromTracksAtIndex:0];
-    }
+    // Reinitialize the configured list of audio tracks
+    [self removeTracksAtIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, self.tracks.count)]];
 
     // Add the foreign audio search pass
-    if (self.defaults.addForeignAudioSearch)
+    if ([search[@"Enable"] boolValue])
     {
-        [self addTrack:[self trackFromSourceTrackIndex:FOREIGN_TRACK_INDEX]];
+        HBSubtitlesTrack *track = [self trackFromSourceTrackIndex:FOREIGN_TRACK_INDEX];
+
+        track.burnedIn = [search[@"Burn"] boolValue];
+        track.forcedOnly = [search[@"Forced"] boolValue];
+        track.def = [search[@"Default"] boolValue];
+
+        [tracks addObject:track];
     }
 
-    // Add the tracks for the selected languages
-    if (self.defaults.trackSelectionBehavior != HBSubtitleTrackSelectionBehaviorNone)
+    // Add the tracks
+    for (NSDictionary *trackDict in settingsTracks)
     {
-        for (NSString *lang in self.defaults.trackSelectionLanguages)
-        {
-            NSUInteger idx = 0;
-            for (NSDictionary *track in self.sourceTracks)
-            {
-                if (idx > FOREIGN_TRACK_INDEX &&
-                    ([lang isEqualToString:@"und"] || [track[keySubTrackLanguageIsoCode] isEqualToString:lang]))
-                {
-                    if (![tracksAdded containsIndex:idx])
-                    {
-                        [self addTrack:[self trackFromSourceTrackIndex:idx]];
-                    }
-                    [tracksAdded addIndex:idx];
+        HBSubtitlesTrack *track = [self trackFromSourceTrackIndex:[trackDict[@"Track"] unsignedIntegerValue] + 2];
 
-                    if (self.defaults.trackSelectionBehavior == HBSubtitleTrackSelectionBehaviorFirst)
-                    {
-                        break;
-                    }
-                }
-                idx++;
-            }
-        }
+        track.burnedIn = [trackDict[@"Burn"] boolValue];
+        track.forcedOnly = [trackDict[@"Forced"] boolValue];
+
+        [tracks addObject:track];
     }
 
-    // Add the closed captions track if there is one.
-    if (self.defaults.addCC)
-    {
-        NSUInteger idx = 0;
-        for (NSDictionary *track in self.sourceTracks)
-        {
-            if ([track[keySubTrackType] intValue] == CC608SUB)
-            {
-                if (![tracksAdded containsIndex:idx])
-                {
-                    [self addTrack:[self trackFromSourceTrackIndex:idx]];
-                }
+    [self insertTracks:tracks atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, tracks.count)]];
 
-                if (self.defaults.trackSelectionBehavior == HBSubtitleTrackSelectionBehaviorFirst)
-                {
-                    break;
-                }
-            }
-            idx++;
-        }
-    }
-
-    // Set the burn key for the appropriate track.
-    if (self.defaults.burnInBehavior != HBSubtitleTrackBurnInBehaviorNone && self.tracks.count)
-    {
-        if (self.defaults.burnInBehavior == HBSubtitleTrackBurnInBehaviorFirst)
-        {
-            if (self.tracks.firstObject.sourceTrackIdx != FOREIGN_TRACK_INDEX)
-            {
-                self.tracks.firstObject.burnedIn = YES;
-            }
-            else if (self.tracks.count > 1)
-            {
-                self.tracks[0].burnedIn = NO;
-                self.tracks[1].burnedIn = YES;
-            }
-        }
-        else if (self.defaults.burnInBehavior == HBSubtitleTrackBurnInBehaviorForeignAudio)
-        {
-            if (self.tracks.firstObject.sourceTrackIdx == FOREIGN_TRACK_INDEX)
-            {
-                self.tracks.firstObject.burnedIn = YES;
-            }
-        }
-        else if (self.defaults.burnInBehavior == HBSubtitleTrackBurnInBehaviorForeignAudioThenFirst)
-        {
-            self.tracks.firstObject.burnedIn = YES;
-        }
-    }
-
-    // Burn-in the first dvd or bluray track and remove the others.
-    if (self.defaults.burnInDVDSubtitles || self.defaults.burnInBluraySubtitles)
-    {
-        // Ugly settings for ugly players
-        BOOL bitmapSubtitlesFound = NO;
-
-        NSMutableArray *tracksToDelete = [[NSMutableArray alloc] init];
-        for (HBSubtitlesTrack *track in self.tracks)
-        {
-            if (track.sourceTrackIdx != 1)
-            {
-                if (((track.type == VOBSUB && self.defaults.burnInDVDSubtitles) ||
-                     (track.type == PGSSUB && self.defaults.burnInBluraySubtitles)) &&
-                    !bitmapSubtitlesFound)
-                {
-                    track.burnedIn = YES;
-                    bitmapSubtitlesFound = YES;
-                }
-                else if (track.type == VOBSUB || track.type == PGSSUB)
-                {
-                    [tracksToDelete addObject:track];
-                }
-            }
-        }
-        [self.tracks removeObjectsInArray:tracksToDelete];
-    }
-
-    // Add an empty track
+    // Add an None item
     [self addNoneTrack];
-    [self validatePassthru];
 }
 
 #pragma mark - Validation
@@ -480,6 +417,38 @@ extern NSString *keySubTrackSrtFileURL;
     }];
 }
 
+- (BOOL)startAccessingSecurityScopedResource
+{
+#ifdef __SANDBOX_ENABLED__
+    if (self.accessCount == 0)
+    {
+        for (NSDictionary *sourceTrack in self.sourceTracks)
+        {
+            if (sourceTrack[keySubTrackSrtFileURLBookmark])
+            {
+                [self.tokens addObject:[HBSecurityAccessToken tokenWithObject:sourceTrack[keySubTrackSrtFileURL]]];
+            }
+        }
+    }
+    self.accessCount += 1;
+    return YES;
+#else
+    return NO;
+#endif
+}
+
+- (void)stopAccessingSecurityScopedResource
+{
+#ifdef __SANDBOX_ENABLED__
+    self.accessCount -= 1;
+    NSAssert(self.accessCount >= 0, @"[HBSubtitles stopAccessingSecurityScopedResource:] unbalanced call");
+    if (self.accessCount == 0)
+    {
+        [self.tokens removeAllObjects];
+    }
+#endif
+}
+
 #pragma mark - NSCopying
 
 - (instancetype)copyWithZone:(NSZone *)zone
@@ -489,18 +458,21 @@ extern NSString *keySubTrackSrtFileURL;
     if (copy)
     {
         copy->_container = _container;
-        copy->_sourceTracks = [_sourceTracks mutableCopy];
+        copy->_sourceTracks = [_sourceTracks copy];
 
         copy->_tracks = [[NSMutableArray alloc] init];
-        [_tracks enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
-            if (idx < _tracks.count)
-            {
-                id trackCopy = [obj copy];
-                [copy->_tracks addObject:trackCopy];
-            }
-        }];
+
+        for (HBSubtitlesTrack *track in _tracks)
+        {
+            HBSubtitlesTrack *trackCopy = [track copy];
+            [copy->_tracks addObject:trackCopy];
+
+            trackCopy.dataSource = copy;
+            trackCopy.delegate = copy;
+        }
 
         copy->_defaults = [_defaults copy];
+        copy->_tokens = [NSMutableArray array];
     }
 
     return copy;
@@ -527,9 +499,34 @@ extern NSString *keySubTrackSrtFileURL;
 {
     self = [super init];
 
+    _tokens = [NSMutableArray array];
+
     decodeInt(_container);
-    decodeObject(_sourceTracks, NSMutableArray);
-    decodeObject(_tracks, NSMutableArray);
+    decodeCollectionOfObjects3(_sourceTracks, NSArray, NSDictionary, NSURL, NSData);
+
+#ifdef __SANDBOX_ENABLED__
+    NSMutableArray *sourceTracks = [_sourceTracks mutableCopy];
+    for (NSDictionary *sourceTrack in _sourceTracks)
+    {
+        if (sourceTrack[keySubTrackSrtFileURLBookmark])
+        {
+            NSMutableDictionary<NSString *, id> *copy =  [sourceTrack mutableCopy];
+            NSURL *srtURL = [HBUtilities URLFromBookmark:sourceTrack[keySubTrackSrtFileURLBookmark]];
+            if (srtURL)
+            {
+                copy[keySubTrackSrtFileURL] = srtURL;
+            }
+            [sourceTracks addObject:copy];
+        }
+        else
+        {
+            [sourceTracks addObject:sourceTrack];
+        }
+    }
+    _sourceTracks = [sourceTracks copy];
+#endif
+
+    decodeCollectionOfObjects(_tracks, NSMutableArray, HBSubtitlesTrack);
 
     for (HBSubtitlesTrack *track in _tracks)
     {
@@ -549,10 +546,10 @@ extern NSString *keySubTrackSrtFileURL;
     [self.defaults writeToPreset:preset];
 }
 
-- (void)applyPreset:(HBPreset *)preset
+- (void)applyPreset:(HBPreset *)preset jobSettings:(NSDictionary *)settings
 {
-    [self.defaults applyPreset:preset];
-    [self addTracksFromDefaults];
+    [self.defaults applyPreset:preset jobSettings:settings];
+    [self addDefaultTracksFromJobSettings:settings];
 }
 
 #pragma mark -
@@ -574,11 +571,25 @@ extern NSString *keySubTrackSrtFileURL;
     [self.tracks insertObject:track atIndex:index];
 }
 
+- (void)insertTracks:(NSArray<HBSubtitlesTrack *> *)array atIndexes:(NSIndexSet *)indexes
+{
+    [[self.undo prepareWithInvocationTarget:self] removeTracksAtIndexes:indexes];
+    [self.tracks insertObjects:array atIndexes:indexes];
+}
+
 - (void)removeObjectFromTracksAtIndex:(NSUInteger)index
 {
     HBSubtitlesTrack *track = self.tracks[index];
     [[self.undo prepareWithInvocationTarget:self] insertObject:track inTracksAtIndex:index];
     [self.tracks removeObjectAtIndex:index];
 }
+
+- (void)removeTracksAtIndexes:(NSIndexSet *)indexes
+{
+    NSArray<HBSubtitlesTrack *> *tracks = [self.tracks objectsAtIndexes:indexes];
+    [[self.undo prepareWithInvocationTarget:self] insertTracks:tracks atIndexes:indexes];
+    [self.tracks removeObjectsAtIndexes:indexes];
+}
+
 
 @end

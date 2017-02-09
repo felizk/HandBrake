@@ -1,6 +1,7 @@
 __deps__ := A52DEC BZIP2 LIBVPX FFMPEG FONTCONFIG FREETYPE LAME LIBASS LIBDCA \
-    LIBDVDREAD LIBDVDNAV LIBICONV LIBOGG LIBSAMPLERATE LIBTHEORA LIBVORBIS \
-    LIBXML2 PTHREADW32 X264 X265 ZLIB LIBBLURAY FDKAAC LIBMFX LIBGNURX JANSSON
+    LIBDVDREAD LIBDVDNAV LIBICONV LIBSAMPLERATE LIBTHEORA LIBVORBIS LIBOGG \
+    LIBXML2 PTHREADW32 X264 X265 ZLIB LIBBLURAY FDKAAC LIBMFX LIBGNURX JANSSON \
+    HARFBUZZ LIBOPUS
 
 $(eval $(call import.MODULE.defs,LIBHB,libhb,$(__deps__)))
 $(eval $(call import.GCC,LIBHB))
@@ -36,10 +37,6 @@ LIBHB.out += $(LIBHB.h.out)
 LIBHB.out += $(LIBHB.a)
 
 ###############################################################################
-
-ifeq (1,$(FEATURE.hwd))
-LIBHB.GCC.D += USE_HWD
-endif
 
 ifeq (1,$(FEATURE.libav_aac))
 LIBHB.GCC.D += USE_LIBAV_AAC
@@ -85,6 +82,10 @@ ifeq (1,$(COMPAT.strtok_r))
     LIBHB.GCC.D += HB_NEED_STRTOK_R
 endif
 
+ifeq (1,$(HAS.strerror_r))
+    LIBHB.GCC.D += HAS_STRERROR_R
+endif
+
 ## required for <libdvdread/*.h>
 ifneq (,$(filter $(BUILD.arch),ppc ppc64))
 	LIBHB.GCC.D += WORDS_BIGENDIAN
@@ -121,9 +122,9 @@ LIBHB.dll = $(LIBHB.build/)hb.dll
 LIBHB.lib = $(LIBHB.build/)hb.lib
 
 LIBHB.dll.libs = $(foreach n, \
-        ass avcodec avformat avutil avresample dvdnav dvdread fontconfig \
-        freetype mp3lame ogg samplerate swscale vpx theora vorbis vorbisenc \
-        x264 xml2 bluray jansson, \
+        ass avcodec avformat avfilter avutil avresample dvdnav dvdread fontconfig \
+        freetype mp3lame samplerate swscale vpx theora vorbis vorbisenc ogg \
+        x264 xml2 bluray jansson harfbuzz opus, \
         $(CONTRIB.build/)lib/lib$(n).a )
 
 ifeq (1,$(FEATURE.fdk_aac))

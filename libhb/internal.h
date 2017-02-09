@@ -1,6 +1,6 @@
 /* internal.h
 
-   Copyright (c) 2003-2016 HandBrake Team
+   Copyright (c) 2003-2017 HandBrake Team
    This file is part of the HandBrake source code
    Homepage: <http://handbrake.fr/>.
    It may be used under the terms of the GNU General Public License v2.
@@ -9,14 +9,9 @@
 
 #include "hbffmpeg.h"
 #include "extras/cl.h"
-
-/***********************************************************************
- * Hardware Decode Context
- **********************************************************************/
-struct hb_hwd_s
-{
-    uint8_t enable;
-};
+#ifdef USE_QSV
+#include "qsv_libav.h"
+#endif
 
 /***********************************************************************
  * common.c
@@ -63,7 +58,7 @@ void hb_job_setup_passes(hb_handle_t *h, hb_job_t *job, hb_list_t *list_pass);
  */
 struct hb_buffer_settings_s
 {
-    enum { AUDIO_BUF, VIDEO_BUF, SUBTITLE_BUF, FRAME_BUF, OTHER_BUF } type;
+    enum { OTHER_BUF, AUDIO_BUF, VIDEO_BUF, SUBTITLE_BUF, FRAME_BUF } type;
 
     int           id;           // ID of the track that the packet comes from
     int64_t       start;        // start time of frame
@@ -71,6 +66,8 @@ struct hb_buffer_settings_s
     int64_t       stop;         // stop time of frame
     int64_t       renderOffset; // DTS used by b-frame offsets in muxmp4
     int64_t       pcr;
+    int           scr_sequence; // The SCR sequence that this buffer's 
+                                // timestamps are referenced to
     int           split;
     uint8_t       discontinuity;
     int           new_chap;     // Video packets: if non-zero, is the index of the chapter whose boundary was crossed
@@ -82,23 +79,31 @@ struct hb_buffer_settings_s
 #define HB_FRAME_P        0x10
 #define HB_FRAME_B        0x20
 #define HB_FRAME_BREF     0x40
-#define HB_FRAME_KEY      0x0F
-#define HB_FRAME_REF      0xF0
+#define HB_FRAME_MASK_KEY 0x0F
+#define HB_FRAME_MASK_REF 0xF0
     uint8_t       frametype;
 
 // Picture flags used by filters
-#ifndef PIC_FLAG_REPEAT_FIRST_FIELD
-#define PIC_FLAG_REPEAT_FIRST_FIELD 0x0100
-#endif
 #ifndef PIC_FLAG_TOP_FIELD_FIRST
 #define PIC_FLAG_TOP_FIELD_FIRST    0x0008
 #endif
 #ifndef PIC_FLAG_PROGRESSIVE_FRAME
 #define PIC_FLAG_PROGRESSIVE_FRAME  0x0010
 #endif
+#ifndef PIC_FLAG_REPEAT_FIRST_FIELD
+#define PIC_FLAG_REPEAT_FIRST_FIELD 0x0100
+#endif
 #define PIC_FLAG_REPEAT_FRAME       0x0200
 #define HB_BUF_FLAG_EOF             0x0400
+#define HB_BUF_FLAG_EOS             0x0800
+#define HB_FLAG_FRAMETYPE_KEY       0x1000
+#define HB_FLAG_FRAMETYPE_REF       0x2000
     uint16_t      flags;
+
+#define HB_COMB_NONE  0
+#define HB_COMB_LIGHT 1
+#define HB_COMB_HEAVY 2
+    uint8_t       combed;
 };
 
 struct hb_image_format_s
@@ -119,19 +124,6 @@ struct hb_buffer_s
     uint8_t *     data;     // packet data
     int           offset;   // used internally by packet lists (hb_list_t)
 
-    /*
-     * Corresponds to the order that this packet was read from the demuxer.
-     * 
-     * It is important that video decoder work-objects pass this value through
-     * from their input packets to the output packets they generate. Otherwise
-     * RENDERSUB subtitles (especially VOB subtitles) will break.
-     * 
-     * Subtitle decoder work-objects that output a renderable subtitle
-     * format (ex: PICTURESUB) must also be careful to pass the sequence number
-     * through for the same reason.
-     */
-    int64_t       sequence;
-
     hb_buffer_settings_t s;
     hb_image_format_t f;
 
@@ -145,11 +137,14 @@ struct hb_buffer_s
         int           size;
     } plane[4]; // 3 Color components + alpha
 
+#ifdef USE_QSV
     struct qsv
     {
-        void *qsv_atom;
-        void *filter_details;
+        void           * qsv_atom;
+        void           * filter_details;
+        hb_qsv_context * ctx;
     } qsv_details;
+#endif
 
     /* OpenCL */
     struct cl_data
@@ -265,9 +260,8 @@ static inline hb_buffer_t * hb_video_buffer_init( int width, int height )
 }
 
 /***********************************************************************
- * Threads: update.c, scan.c, work.c, reader.c, muxcommon.c
+ * Threads: scan.c, work.c, reader.c, muxcommon.c
  **********************************************************************/
-hb_thread_t * hb_update_init( int * build, char * version );
 hb_thread_t * hb_scan_init( hb_handle_t *, volatile int * die, 
                             const char * path, int title_index, 
                             hb_title_set_t * title_set, int preview_count, 
@@ -426,6 +420,7 @@ enum
     WORK_NONE = 0,
     WORK_SYNC_VIDEO,
     WORK_SYNC_AUDIO,
+    WORK_SYNC_SUBTITLE,
     WORK_DECCC608,
     WORK_DECVOBSUB,
     WORK_DECSRTSUB,
@@ -453,16 +448,19 @@ enum
 };
 
 extern hb_filter_object_t hb_filter_detelecine;
+extern hb_filter_object_t hb_filter_comb_detect;
+extern hb_filter_object_t hb_filter_decomb;
 extern hb_filter_object_t hb_filter_deinterlace;
+extern hb_filter_object_t hb_filter_vfr;
 extern hb_filter_object_t hb_filter_deblock;
 extern hb_filter_object_t hb_filter_denoise;
 extern hb_filter_object_t hb_filter_nlmeans;
-extern hb_filter_object_t hb_filter_decomb;
+extern hb_filter_object_t hb_filter_render_sub;
+extern hb_filter_object_t hb_filter_crop_scale;
 extern hb_filter_object_t hb_filter_rotate;
 extern hb_filter_object_t hb_filter_grayscale;
-extern hb_filter_object_t hb_filter_crop_scale;
-extern hb_filter_object_t hb_filter_render_sub;
-extern hb_filter_object_t hb_filter_vfr;
+extern hb_filter_object_t hb_filter_pad;
+extern hb_filter_object_t hb_filter_avfilter;
 
 #ifdef USE_QSV
 extern hb_filter_object_t hb_filter_qsv;
@@ -497,7 +495,28 @@ DECLARE_MUX( mkv );
 DECLARE_MUX( avformat );
 
 void hb_muxmp4_process_subtitle_style( uint8_t *input,
-                                       uint8_t *output,
-                                       uint8_t *style, uint16_t *stylesize );
+                                       uint8_t **output,
+                                       uint8_t **style, uint16_t *stylesize );
 
 void hb_deinterlace(hb_buffer_t *dst, hb_buffer_t *src);
+void hb_avfilter_combine( hb_list_t * list );
+
+struct hb_chapter_queue_item_s
+{
+    int64_t start;
+    int     new_chap;
+};
+
+struct hb_chapter_queue_s
+{
+    hb_list_t   * list_chapter;
+};
+
+typedef struct hb_chapter_queue_item_s hb_chapter_queue_item_t;
+typedef struct hb_chapter_queue_s hb_chapter_queue_t;
+
+hb_chapter_queue_t * hb_chapter_queue_init(void);
+void                 hb_chapter_queue_close(hb_chapter_queue_t **_q);
+void                 hb_chapter_enqueue(hb_chapter_queue_t *q, hb_buffer_t *b);
+void                 hb_chapter_dequeue(hb_chapter_queue_t *q, hb_buffer_t *b);
+
